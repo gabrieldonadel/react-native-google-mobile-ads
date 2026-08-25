@@ -27,6 +27,32 @@ import mobileAds, {
   useRewardedAd,
   useRewardedInterstitialAd,
   useForeground,
+  AdFormat,
+  AdPools,
+  AdPoolPresets,
+  CompetitiveAdPresets,
+  CompetitiveAdRequest,
+  CompetitiveBannerAdView,
+  getAdCapabilities,
+  AdPoolProvider,
+  useAdPool,
+  usePooledAd,
+  useCompetitiveAd,
+  NativeError,
+} from './src';
+
+import type {
+  AdBackend,
+  AdCapabilities,
+  AdErrorPayload,
+  AdPoolConfig,
+  CapabilitySupport,
+  CompetitiveAdRequestOptions,
+  CompetitiveBannerAdHandle,
+  CompetitiveBannerSize,
+  PaidEvent,
+  PooledAd,
+  ResponseInfo,
 } from './src';
 
 // static exports
@@ -111,6 +137,7 @@ console.log(TestIds.REWARDED_INTERSTITIAL);
 console.log(AdEventType.CLICKED);
 console.log(AdEventType.CLOSED);
 console.log(AdEventType.ERROR);
+console.log(AdEventType.IMPRESSION);
 console.log(AdEventType.LOADED);
 console.log(AdEventType.OPENED);
 console.log(AdEventType.PAID);
@@ -287,3 +314,86 @@ console.log(useRewardedInterstitialAd);
 
 // useForeground
 console.log(useForeground);
+
+// v17 capability discovery + presets
+const capabilities: AdCapabilities = getAdCapabilities();
+const backend: AdBackend = capabilities.backend;
+const support: CapabilitySupport = capabilities.fullscreenPreload;
+console.log(backend, support, capabilities.sdkVersion);
+console.log(AdFormat.NATIVE, AdFormat.BANNER, AdFormat.INTERSTITIAL);
+
+const fullscreenPoolConfig: AdPoolConfig = AdPoolPresets.fullscreen(
+  AdFormat.INTERSTITIAL,
+  TestIds.INTERSTITIAL,
+);
+const displayPoolConfig = AdPoolPresets.display(TestIds.GAM_NATIVE);
+console.log(fullscreenPoolConfig.poolId, displayPoolConfig.formats);
+
+const competitiveBannerSizes: CompetitiveBannerSize[] = [
+  BannerAdSize.BANNER,
+  BannerAdSize.MEDIUM_RECTANGLE,
+  BannerAdSize.WIDE_SKYSCRAPER,
+  '300x200',
+  { width: 300, height: 200 },
+];
+const competitiveOptions: CompetitiveAdRequestOptions = CompetitiveAdPresets.nativeOrBanner(
+  TestIds.GAM_NATIVE,
+  competitiveBannerSizes,
+);
+const competitive = CompetitiveAdRequest.create(TestIds.GAM_NATIVE, competitiveOptions);
+console.log(competitive.adUnitId);
+competitive.destroy();
+
+AdPools.getCapabilities();
+AdPools.get('missing');
+AdPools.destroyAll();
+AdPools.create(fullscreenPoolConfig).catch(() => undefined);
+
+console.log(AdPoolProvider);
+console.log(useAdPool);
+console.log(usePooledAd);
+console.log(useCompetitiveAd);
+
+// CompetitiveBannerAdView (banner-only handle prop)
+declare const competitiveBannerHandle: CompetitiveBannerAdHandle;
+console.log(CompetitiveBannerAdView, competitiveBannerHandle.format);
+
+// NativeError public export
+console.log(NativeError);
+
+// PooledAd fullscreen listener typing (must not erase to unknown[])
+declare const pooledAd: PooledAd;
+if (
+  pooledAd.format === AdFormat.INTERSTITIAL ||
+  pooledAd.format === AdFormat.APP_OPEN ||
+  pooledAd.format === AdFormat.REWARDED ||
+  pooledAd.format === AdFormat.REWARDED_INTERSTITIAL
+) {
+  pooledAd.addAdEventListener(AdEventType.LOADED, () => undefined)();
+  pooledAd.addAdEventListener(GAMAdEventType.APP_EVENT, () => undefined)();
+  pooledAd.addAdEventsListener(({ type, payload }) => {
+    console.log(type, payload);
+  })();
+  pooledAd.removeAllListeners();
+}
+
+const errorPayload: AdErrorPayload = {
+  code: 'googleMobileAds/error-code-no-fill',
+  message: 'no fill',
+  reason: 'no-fill',
+  phase: 'load',
+};
+const paid: PaidEvent = {
+  currency: 'USD',
+  precision: 3,
+  value: 0.01,
+  valueMicros: '10000',
+};
+const responseInfo: ResponseInfo = {
+  responseId: null,
+  adapterClassName: null,
+  loadedAdapterResponse: null,
+  adapterResponses: [],
+  extras: {},
+};
+console.log(errorPayload.reason, paid.valueMicros, responseInfo.extras);

@@ -90,6 +90,9 @@ export function useFullScreenAd(
         case AdEventType.ERROR:
           dispatch({ error: payload as Error });
           break;
+        case AdEventType.IMPRESSION:
+          // Additive impression signal; no hook state field required for v1.
+          break;
         case RewardedAdEventType.LOADED:
           dispatch({ isLoaded: true, reward: payload as RewardedAdReward });
           break;
@@ -103,10 +106,16 @@ export function useFullScreenAd(
     };
   }, [ad]);
 
+  const destroy = useCallback(() => {
+    ad?.destroy();
+  }, [ad]);
+
   return {
     ...state,
+    responseInfo: ad?.responseInfo ?? null,
     isShowing,
     load,
     show,
+    destroy,
   };
 }
