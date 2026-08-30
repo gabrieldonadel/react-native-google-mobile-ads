@@ -15,6 +15,8 @@
  *
  */
 
+import { useCallback, useRef } from 'react';
+
 import type { AdPool } from '../types/AdPool';
 import type { AdError } from '../types/AdError';
 
@@ -32,8 +34,10 @@ type UseAdPoolResultBase = {
    * A no-op while a create is already in flight, and a no-op when `status` is
    * `absent`: there is no config to retry with, so fix the provider instead.
    *
-   * Keeps the same identity for the life of the hook, so it is safe in a
-   * dependency array and safe to pass straight to a press handler.
+   * Keeps the same identity for the life of the hook instance, so it is safe
+   * in a dependency array and safe to pass straight to a press handler.
+   * `poolId` is sampled when `retry` runs (ref updated each render); a new
+   * string on a later render does not change `retry`'s identity.
    */
   retry: () => void;
 };
@@ -72,14 +76,21 @@ export type UseAdPoolStatus = UseAdPoolResult['status'];
 
 /**
  * Read a pool created by AdPoolProvider or AdPools.create.
- * Stub: always `absent`, since no pool can be created yet.
+ * Stub: always `absent`, since no pool can be created yet. `retry` keeps a
+ * stable identity for the life of the hook instance.
  */
 export function useAdPool(poolId: string): UseAdPoolResult {
-  void poolId;
+  const poolIdRef = useRef(poolId);
+  poolIdRef.current = poolId;
+
+  const retry = useCallback(() => {
+    void poolIdRef.current;
+  }, []);
+
   return {
     status: 'absent',
     pool: null,
     error: null,
-    retry: () => undefined,
+    retry,
   };
 }

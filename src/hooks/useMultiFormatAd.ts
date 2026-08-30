@@ -15,6 +15,8 @@
  *
  */
 
+import { useCallback, useRef } from 'react';
+
 import type { AdError } from '../types/AdError';
 import type {
   MultiFormatAdHandle,
@@ -25,9 +27,14 @@ import type {
 /**
  * Members present on every arm, so they are callable without narrowing.
  *
- * `load` and `release` keep the same identity for the life of the hook, the
- * same guarantee `usePooledAd` gives, so `useEffect(() => { void load(); },
- * [load])` loads once rather than on every render.
+ * `load` and `release` keep the same identity for the life of the hook
+ * instance, the same guarantee `usePooledAd` gives, so
+ * `useEffect(() => { void load(); }, [load])` loads once per mount rather than
+ * on every render. `adUnitId` and `options` are sampled when `load` runs (refs
+ * updated each render): a fresh inline options object each render — including
+ * `MultiFormatAdPresets.*(...)` called in the render body — does **not** change
+ * `load`'s identity. See the v17 reference "Callback identity and argument
+ * freshness".
  */
 type UseMultiFormatAdResultBase = {
   /**
@@ -35,6 +42,13 @@ type UseMultiFormatAdResultBase = {
    * a `MultiFormatLoadResult` mirroring the state it just set, so the return
    * value is optional convenience for callers that want to load and render in
    * one handler, exactly like `usePooledAd().poll()`.
+   *
+   * Concurrent calls coalesce onto the in-flight load, same parity as
+   * `usePooledAd().poll()`, so a double tap — or React StrictMode in
+   * development double-invoking an effect that calls `load()` — cannot issue
+   * two network loads from this hook instance. Joiners share the promise
+   * started with the `adUnitId` / `options` current when the flight began;
+   * after it settles, the next call samples the latest arguments.
    *
    * This library performed the load, so the observed time starts at hand-off and
    * aging is only possible afterwards, while the hook holds the handles. A later
@@ -138,25 +152,54 @@ export type UseMultiFormatAdStatus = UseMultiFormatAdResult['status'];
  * Multi-format request as a hook. One request, several eligible formats,
  * one winner per format leg (`requestCount` 1 in v1).
  *
- * Ownership, release ordering, never-reject load, and `stale-by-policy`
- * semantics match `usePooledAd`. Status **vocabulary** does not: this hook
- * uses load words (`loading` / `loaded` / `loaded-partial`) because its
- * terminal arms mirror `MultiFormatLoadResult`, while `usePooledAd` uses poll
- * words (`polling` / `filled`) because its terminal arms mirror `PollResult`.
+ * Ownership, release ordering, never-reject load, load coalescing, and
+ * `stale-by-policy` semantics match `usePooledAd`. Status **vocabulary** does
+ * not: this hook uses load words (`loading` / `loaded` / `loaded-partial`)
+ * because its terminal arms mirror `MultiFormatLoadResult`, while `usePooledAd`
+ * uses poll words (`polling` / `filled`) because its terminal arms mirror
+ * `PollResult`.
  *
- * Stub: load resolves `{ status: 'no-fill', ads: [], errors: [] }`.
+ * Stub: load resolves `{ status: 'no-fill', ads: [], errors: [] }`. Callback
+ * identity and per-instance coalescing match the documented contract so
+ * `useEffect(() => { void load(); }, [load])` and StrictMode double-invoke
+ * behave as the reference describes.
  */
 export function useMultiFormatAd(
   adUnitId: string,
   options: MultiFormatAdRequestOptions,
 ): UseMultiFormatAdResult {
-  void adUnitId;
-  void options;
+  const adUnitIdRef = useRef(adUnitId);
+  adUnitIdRef.current = adUnitId;
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+
+  const inflightRef = useRef<Promise<MultiFormatLoadResult> | null>(null);
+
+  const load = useCallback((): Promise<MultiFormatLoadResult> => {
+    void adUnitIdRef.current;
+    void optionsRef.current;
+    if (inflightRef.current) {
+      return inflightRef.current;
+    }
+    const result: MultiFormatLoadResult = {
+      status: 'no-fill',
+      ads: [],
+      errors: [],
+    };
+    const flight = Promise.resolve(result).finally(() => {
+      inflightRef.current = null;
+    }) as Promise<MultiFormatLoadResult>;
+    inflightRef.current = flight;
+    return flight;
+  }, []);
+
+  const release = useCallback((): MultiFormatAdHandle[] => [], []);
+
   return {
     status: 'idle',
     ads: [],
     errors: [],
-    load: () => Promise.resolve({ status: 'no-fill', ads: [], errors: [] }),
-    release: () => [],
+    load,
+    release,
   };
 }

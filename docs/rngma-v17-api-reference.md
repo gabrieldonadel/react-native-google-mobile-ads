@@ -624,7 +624,8 @@ function usePooledAd(poolId: string): UsePooledAdResult;
 // UseMultiFormatAdResultBase is module-local; consumers import
 // UseMultiFormatAdResult and UseMultiFormatAdStatus.
 type UseMultiFormatAdResultBase = {
-  load: () => Promise<MultiFormatLoadResult>; // updates state; never rejects
+  // updates state; never rejects; coalesces like usePooledAd().poll()
+  load: () => Promise<MultiFormatLoadResult>;
   // take ownership without destroying; leaves status 'idle' among current arms
   release: () => MultiFormatAdHandle[];
 };
@@ -649,7 +650,7 @@ function useMultiFormatAd(adUnitId, options): UseMultiFormatAdResult;
 
 `usePooledAd` is **state-first**. Calling `poll()` updates `status`, `ad`, and `error` on the hook, so you do not track loading, stash the ad, or destroy it yourself. It also:
 
-- **coalesces** concurrent calls onto the in-flight poll, so a double tap cannot burn two ads (**per hook instance** — see shared-`poolId` note below),
+- **coalesces** concurrent calls onto the in-flight poll, so a double tap — or React StrictMode in development double-invoking an effect that calls `poll()` — cannot burn two ads (**per hook instance** — see shared-`poolId` note below),
 - **destroys** the previous ad when a later poll supersedes it, and every held ad on unmount,
 - **subscribes** to `onStaleByPolicy`: unrendered inventory is destroyed, `ad` cleared, and `status` set to `'stale-by-policy'`; already-rendered banner/native inventory is left in place,
 - **consumes** a fullscreen ad it still owns when `await ad.show()` **fulfills** (show-promise settle): destroys the spent ad, clears `ad`, and sets `status` to `'consumed'` (not an error; a later show attempt on a released reference fails with reason `'ad-already-used'`). The milestone is **not** `OPENED`, `CLOSED`, or `EARNED_REWARD` — native show promises resolve after `present`/`show` without waiting for those events (Android `FullScreenAdModule`, iOS `RNGoogleMobileAdsFullScreenAd`; classic `useFullScreenAd` tracks `OPENED`/`CLOSED` for observation only and does not auto-destroy),
@@ -677,11 +678,20 @@ Sibling guarantees that do match:
 - the hook **owns** the handles it returns,
 - it **destroys** them on unmount, and when a later `load()` supersedes them,
 - it **subscribes** per handle to `onStaleByPolicy`, drops a stale unrendered handle from `ads`, and reports `status: 'stale-by-policy'` once no showable handle remains, retaining prior load `errors`,
+- `load()` **coalesces** concurrent calls onto the in-flight load (**per hook instance**), same parity as `poll()` — including under StrictMode double-invoke of the mount effect,
 - `load()` **never rejects**: it resolves a `MultiFormatLoadResult` mirroring the state it just set,
 - `release()` hands the current handles to the caller and clears hook state to `status: 'idle'` (among the current arms), returning `[]` when nothing is held, with the same post-`await` ordering guarantee,
 - callers **must not** `destroy()` handles the hook still owns — `release()` first.
 
-**The callbacks these hooks return keep the same identity for the life of the hook.** `poll`, `load`, `release`, and `retry` are stable references, so listing them in a dependency array does not re-run the effect. That is what makes `useEffect(() => { void load(); }, [load])` load once instead of on every render.
+### Callback identity and argument freshness
+
+**Returned callbacks keep the same identity for the life of the hook instance.** `poll`, `load`, `release`, and `retry` are stable references, so listing them in a dependency array does not re-run the effect. That is what makes `useEffect(() => { void load(); }, [load])` load once per mount instead of on every render.
+
+**Hook arguments are not frozen into those callbacks.** `poolId`, `adUnitId`, and `options` are sampled when the callback runs (the implementation holds them in refs updated each render). Passing a fresh inline options object every render — including `MultiFormatAdPresets.nativeOrBanner(...)` called in the render body — does **not** change `load`'s identity and does **not** re-fire an effect that depends only on `[load]`. The next `load()` or `poll()` uses the latest arguments.
+
+If you need to reload when options change, depend on those options (or a value derived from them) yourself and call `load()`; do not expect `[load]` alone to detect argument changes.
+
+**Coalescing and StrictMode.** Both `poll()` and `load()` coalesce concurrent calls onto one in-flight promise per hook instance. Joiners share the result started with the arguments current when the flight began; after it settles, the next call samples current arguments. React StrictMode in development double-invokes effects: without coalescing, the documented mount-effect pattern would issue two polls or two loads. Coalescing is still per hook instance — two components sharing one `poolId` do not share an in-flight poll (see shared-`poolId` note above).
 
 `useAdPool` exposes `status` rather than `ready` + `degraded` booleans, and does **not** mirror degrade reasons; read `pool.resolved.degradeReasons`, the single source of truth.
 

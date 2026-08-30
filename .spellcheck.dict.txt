@@ -132,6 +132,7 @@ SMS
 src
 staleness
 SVG
+StrictMode
 TestLab
 TFUA
 thenable

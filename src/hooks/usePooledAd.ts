@@ -15,6 +15,8 @@
  *
  */
 
+import { useCallback, useRef } from 'react';
+
 import type { PollResult, PooledAd } from '../types/AdPool';
 import type { AdError } from '../types/AdError';
 import type { UseAdPoolStatus } from './useAdPool';
@@ -22,9 +24,11 @@ import type { UseAdPoolStatus } from './useAdPool';
 /**
  * Members present on every arm, so they are callable without narrowing.
  *
- * `poll` and `release` keep the same identity for the life of the hook, so
- * listing them in a dependency array does not re-run the effect or callback
- * that depends on them.
+ * `poll` and `release` keep the same identity for the life of the hook
+ * instance, so listing them in a dependency array does not re-run the effect
+ * or callback that depends on them. `poolId` is sampled when `poll` runs (ref
+ * updated each render): a new string on a later render does not change `poll`'s
+ * identity. See the v17 reference "Callback identity and argument freshness".
  */
 type UsePooledAdResultBase = {
   /**
@@ -66,12 +70,15 @@ type UsePooledAdResultBase = {
    * the same `PollResult` the state reflects, so the return value is optional
    * convenience for callers that want to poll and show in one handler.
    *
-   * Concurrent calls coalesce onto the in-flight poll, so a double tap cannot
-   * burn two ads. Coalescing is **per hook instance**: two components that
-   * both call `usePooledAd(samePoolId)` do not share an in-flight poll. On a
-   * depth-1 pool one placement reliably starves the other — give each
-   * placement its own pool, or make a single owner poll and pass the ad down.
-   * Never call during render: polling consumes inventory.
+   * Concurrent calls coalesce onto the in-flight poll, so a double tap — or
+   * React StrictMode in development double-invoking an effect that calls
+   * `poll()` — cannot burn two ads. Coalescing is **per hook instance**: two
+   * components that both call `usePooledAd(samePoolId)` do not share an
+   * in-flight poll. On a depth-1 pool one placement reliably starves the
+   * other — give each placement its own pool, or make a single owner poll and
+   * pass the ad down. Joiners share the promise started with the `poolId`
+   * current when the flight began; after it settles, the next call samples
+   * the latest `poolId`. Never call during render: polling consumes inventory.
    *
    * A `filled` result is not a freshness guarantee; check `isStaleByPolicy()`
    * when the placement requires it.
@@ -187,10 +194,33 @@ export type UsePooledAdStatus = UsePooledAdResult['status'];
 
 /**
  * Poll-on-demand against a pool. Never polls during render.
+ *
  * Stub: poll always resolves `{ status: 'empty' }`; pool lookup is `absent`.
+ * Callback identity and per-instance coalescing match the documented contract
+ * so `useEffect(() => { void poll(); }, [poll])` and StrictMode double-invoke
+ * behave as the reference describes.
  */
 export function usePooledAd(poolId: string): UsePooledAdResult {
-  void poolId;
+  const poolIdRef = useRef(poolId);
+  poolIdRef.current = poolId;
+
+  const inflightRef = useRef<Promise<PollResult> | null>(null);
+
+  const poll = useCallback((): Promise<PollResult> => {
+    void poolIdRef.current;
+    if (inflightRef.current) {
+      return inflightRef.current;
+    }
+    const result: PollResult = { status: 'empty' };
+    const flight = Promise.resolve(result).finally(() => {
+      inflightRef.current = null;
+    }) as Promise<PollResult>;
+    inflightRef.current = flight;
+    return flight;
+  }, []);
+
+  const release = useCallback((): PooledAd | null => null, []);
+
   return {
     status: 'idle',
     ad: null,
@@ -198,7 +228,7 @@ export function usePooledAd(poolId: string): UsePooledAdResult {
     poolStatus: 'absent',
     available: false,
     observedCount: 0,
-    poll: () => Promise.resolve({ status: 'empty' }),
-    release: () => null,
+    poll,
+    release,
   };
 }
