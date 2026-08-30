@@ -30,27 +30,37 @@ import mobileAds, {
   AdFormat,
   AdPools,
   AdPoolPresets,
-  CompetitiveAdPresets,
-  CompetitiveAdRequest,
-  CompetitiveBannerAdView,
+  MultiFormatAdPresets,
+  MultiFormatAdRequest,
+  MultiFormatBannerAdView,
   getAdCapabilities,
   AdPoolProvider,
   useAdPool,
   usePooledAd,
-  useCompetitiveAd,
+  useMultiFormatAd,
   NativeError,
 } from './src';
 
 import type {
+  AdapterResponseInfo,
   AdBackend,
   AdCapabilities,
+  AdError,
   AdErrorPayload,
+  AdExpiry,
+  AdIdentity,
   AdPoolConfig,
+  AdPoolEvent,
   CapabilitySupport,
-  CompetitiveAdRequestOptions,
-  CompetitiveBannerAdHandle,
-  CompetitiveBannerSize,
+  LoadedAdapterResponseInfo,
+  MultiFormatAdHandle,
+  MultiFormatAdRequestOptions,
+  MultiFormatBannerAdHandle,
+  MultiFormatBannerAdViewProps,
+  MultiFormatBannerSize,
+  MultiFormatLoadResult,
   PaidEvent,
+  PollResult,
   PooledAd,
   ResponseInfo,
 } from './src';
@@ -329,20 +339,29 @@ const fullscreenPoolConfig: AdPoolConfig = AdPoolPresets.fullscreen(
 const displayPoolConfig = AdPoolPresets.display(TestIds.GAM_NATIVE);
 console.log(fullscreenPoolConfig.poolId, displayPoolConfig.formats);
 
-const competitiveBannerSizes: CompetitiveBannerSize[] = [
+// AdPoolPresets.fullscreen takes the same Partial<AdPoolConfig> bag as display,
+// so the one field that matters on a fullscreen pool is reachable.
+const bufferedFullscreenConfig: AdPoolConfig = AdPoolPresets.fullscreen(
+  AdFormat.INTERSTITIAL,
+  TestIds.INTERSTITIAL,
+  { bufferSize: 2, requestOptions: { keywords: ['test'] } },
+);
+console.log(bufferedFullscreenConfig.bufferSize, bufferedFullscreenConfig.requestOptions?.keywords);
+
+const multiFormatBannerSizes: MultiFormatBannerSize[] = [
   BannerAdSize.BANNER,
   BannerAdSize.MEDIUM_RECTANGLE,
   BannerAdSize.WIDE_SKYSCRAPER,
   '300x200',
   { width: 300, height: 200 },
 ];
-const competitiveOptions: CompetitiveAdRequestOptions = CompetitiveAdPresets.nativeOrBanner(
+const multiFormatOptions: MultiFormatAdRequestOptions = MultiFormatAdPresets.nativeOrBanner(
   TestIds.GAM_NATIVE,
-  competitiveBannerSizes,
+  multiFormatBannerSizes,
 );
-const competitive = CompetitiveAdRequest.create(TestIds.GAM_NATIVE, competitiveOptions);
-console.log(competitive.adUnitId);
-competitive.destroy();
+const multiFormat = MultiFormatAdRequest.create(TestIds.GAM_NATIVE, multiFormatOptions);
+console.log(multiFormat.adUnitId);
+multiFormat.destroy();
 
 AdPools.getCapabilities();
 AdPools.get('missing');
@@ -352,11 +371,11 @@ AdPools.create(fullscreenPoolConfig).catch(() => undefined);
 console.log(AdPoolProvider);
 console.log(useAdPool);
 console.log(usePooledAd);
-console.log(useCompetitiveAd);
+console.log(useMultiFormatAd);
 
-// CompetitiveBannerAdView (banner-only handle prop)
-declare const competitiveBannerHandle: CompetitiveBannerAdHandle;
-console.log(CompetitiveBannerAdView, competitiveBannerHandle.format);
+// MultiFormatBannerAdView (banner-only handle prop)
+declare const multiFormatBannerHandle: MultiFormatBannerAdHandle;
+console.log(MultiFormatBannerAdView, multiFormatBannerHandle.format);
 
 // NativeError public export
 console.log(NativeError);
@@ -376,6 +395,125 @@ if (
   })();
   pooledAd.removeAllListeners();
 }
+
+// PooledAd identity + expiry are present on every variant
+console.log(pooledAd.adId, pooledAd.loadedAt, pooledAd.expiresAt, pooledAd.isExpired());
+pooledAd.onExpired(() => undefined)();
+
+// PollResult narrows the filled case to a PooledAd
+declare const pollResult: PollResult;
+switch (pollResult.status) {
+  case 'filled':
+    console.log(pollResult.ad.adId);
+    break;
+  case 'empty':
+  case 'timeout':
+    break;
+  case 'no-fill':
+  case 'error':
+    console.log(pollResult.error.reason, pollResult.error.phase);
+    break;
+}
+
+// Pool expiry events carry ad identity
+declare const poolEvent: AdPoolEvent;
+if (poolEvent.type === 'expired') {
+  console.log(poolEvent.poolId, poolEvent.adId, poolEvent.reason);
+}
+if (poolEvent.type === 'refreshed') {
+  console.log(poolEvent.adId, poolEvent.replacedAdId);
+}
+
+// useAdPool status union narrows `pool` to non-null without assertions
+const poolState = useAdPool('display-pool');
+// `retry` lives on every arm, so it is callable without narrowing first
+poolState.retry();
+if (poolState.status === 'ready' || poolState.status === 'ready-degraded') {
+  console.log(poolState.pool.poolId, poolState.pool.resolved.degradeReasons);
+}
+if (poolState.status === 'error') {
+  // The error arm carries the structured payload as well as being an Error
+  console.log(poolState.error.message, poolState.error.reason, poolState.error.phase);
+}
+
+// usePooledAd is state-first: status/error/ad live on the hook
+const pooledState = usePooledAd('display-pool');
+console.log(pooledState.status, pooledState.available, pooledState.error?.reason);
+pooledState.poll().then(result => console.log(result.status));
+console.log(pooledState.release());
+
+// 'expired' is part of the usePooledAd status union and is not an error state
+const expiredPooledStatus: ReturnType<typeof usePooledAd>['status'] = 'expired';
+console.log(expiredPooledStatus);
+
+// useMultiFormatAd: ownership, no-fill vs error, expired, release
+const multiFormatState = useMultiFormatAd(TestIds.GAM_NATIVE, multiFormatOptions);
+console.log(multiFormatState.status, multiFormatState.ads.length);
+console.log(multiFormatState.errors.map(e => `${e.reason}/${e.phase}: ${e.message}`));
+const releasedHandles: MultiFormatAdHandle[] = multiFormatState.release();
+console.log(releasedHandles.length);
+multiFormatState.load().then(result => console.log(result.status));
+
+const multiFormatNoFillStatus: ReturnType<typeof useMultiFormatAd>['status'] = 'no-fill';
+const multiFormatExpiredStatus: ReturnType<typeof useMultiFormatAd>['status'] = 'expired';
+console.log(multiFormatNoFillStatus, multiFormatExpiredStatus);
+
+// The load result narrows on status, and 'no-fill' is distinct from 'error'
+declare const multiFormatLoadResult: MultiFormatLoadResult;
+switch (multiFormatLoadResult.status) {
+  case 'loaded':
+    console.log(multiFormatLoadResult.ads[0]?.format, multiFormatLoadResult.errors.length);
+    break;
+  case 'loaded-partial':
+    console.log(multiFormatLoadResult.ads[0]?.format);
+    console.log(multiFormatLoadResult.errors.map(e => e.reason));
+    break;
+  case 'no-fill':
+    // A clean no-fill carries no errors, so it cannot be confused with 'error'
+    console.log(multiFormatLoadResult.ads.length, multiFormatLoadResult.errors.length);
+    break;
+  case 'error':
+    console.log(multiFormatLoadResult.errors.map(e => e.phase));
+    break;
+}
+// 'no-fill' and 'error' are separate arms: the no-fill arm cannot carry errors
+type MultiFormatNoFillResult = Extract<MultiFormatLoadResult, { status: 'no-fill' }>;
+type MultiFormatErrorResult = Extract<MultiFormatLoadResult, { status: 'error' }>;
+const multiFormatNoFill: MultiFormatNoFillResult = { status: 'no-fill', ads: [], errors: [] };
+declare const multiFormatError: MultiFormatErrorResult;
+console.log(
+  multiFormatNoFill.errors.length,
+  multiFormatError.errors.map(e => e.reason),
+);
+
+// Multi-format handles carry the same identity + expiry surface pooled ads do
+declare const multiFormatHandle: MultiFormatAdHandle;
+console.log(multiFormatHandle.adId, multiFormatHandle.loadedAt, multiFormatHandle.expiresAt);
+console.log(multiFormatHandle.isExpired());
+multiFormatHandle.onExpired(() => undefined)();
+const handleExpiry: AdExpiry = multiFormatHandle;
+const handleIdentity: AdIdentity = multiFormatHandle;
+const pooledExpiry: AdExpiry = pooledAd;
+const pooledIdentity: AdIdentity = pooledAd;
+console.log(
+  handleExpiry.expiresAt,
+  handleIdentity.adId,
+  pooledExpiry.expiresAt,
+  pooledIdentity.adId,
+);
+
+// A polled banner ad is structurally a MultiFormatBannerAdView handle
+declare const pooledBannerAd: Extract<PooledAd, { format: AdFormat.BANNER }>;
+const pooledBannerViewProps: MultiFormatBannerAdViewProps = { handle: pooledBannerAd };
+const bannerHandleFromPool: MultiFormatBannerAdHandle = pooledBannerAd;
+console.log(pooledBannerViewProps.handle.size, bannerHandleFromPool.adId);
+
+// AdError is one type: a real Error that also carries the structured payload
+declare const adError: AdError;
+const adErrorAsError: Error = adError;
+console.log(adError.reason, adError.phase, adError.message, adError.code);
+console.log(adError.responseInfo?.responseId, adError.namespace, adError.jsStack);
+console.log(adErrorAsError.name, adErrorAsError.stack);
 
 const errorPayload: AdErrorPayload = {
   code: 'googleMobileAds/error-code-no-fill',
@@ -397,3 +535,26 @@ const responseInfo: ResponseInfo = {
   extras: {},
 };
 console.log(errorPayload.reason, paid.valueMicros, responseInfo.extras);
+
+// AdapterResponseInfo: `outcome` narrows adError, shared fields always present
+declare const adapterRow: AdapterResponseInfo;
+console.log(adapterRow.adapterClassName, adapterRow.latencyMillis);
+if (adapterRow.outcome === 'error') {
+  console.log(adapterRow.adError.domain, adapterRow.adError.code);
+} else {
+  const noError: null = adapterRow.adError;
+  console.log(noError);
+}
+
+// The loaded row cannot carry an error
+const loadedRow: LoadedAdapterResponseInfo = {
+  adapterClassName: 'com.google.ads.mediation.admob.AdMobAdapter',
+  adSourceName: null,
+  adSourceId: null,
+  adSourceInstanceName: null,
+  adSourceInstanceId: null,
+  latencyMillis: 42,
+  outcome: 'success',
+  adError: null,
+};
+console.log(loadedRow.adError, loadedRow.latencyMillis);

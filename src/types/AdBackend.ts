@@ -1,1 +1,1 @@
-export type AdBackend = 'ios-classic' | 'android-classic' | 'android-next-gen';
+export type AdBackend = 'ios' | 'android-classic' | 'android-next-gen';

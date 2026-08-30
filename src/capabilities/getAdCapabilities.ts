@@ -15,7 +15,7 @@ const STUB_CAPABILITIES: AdCapabilities = {
     [AdFormat.BANNER]: unavailable,
     [AdFormat.NATIVE]: unavailable,
   },
-  competitiveNativeBanner: unavailable,
+  multiFormatNativeBanner: unavailable,
   fullscreenPreload: unavailable,
   displayPreload: unavailable,
   multiCountNative: unavailable,
@@ -26,7 +26,7 @@ const STUB_CAPABILITIES: AdCapabilities = {
 /**
  * Returns the static capability snapshot for this binary.
  * Stub: placeholder values (`android-classic`, `0.0.0-stub`, all `unavailable`)
- * until native wiring lands — not live capability readings.
+ * until native wiring lands, not live capability readings.
  */
 export function getAdCapabilities(): AdCapabilities {
   return STUB_CAPABILITIES;

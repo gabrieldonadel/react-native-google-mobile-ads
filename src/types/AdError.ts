@@ -1,3 +1,4 @@
+import type { NativeError } from '../internal/NativeError';
 import type { ResponseInfo } from './ResponseInfo';
 
 export type KnownAdErrorReason =
@@ -32,3 +33,18 @@ export type AdErrorPayload = {
   phase: 'load' | 'show';
   responseInfo?: ResponseInfo;
 };
+
+/**
+ * The single error type every v17 hook and multi-format load result uses.
+ *
+ * It is a real `Error` (it can be thrown, and it has a `stack`) that also carries the
+ * structured payload, so `reason` / `phase` / `responseInfo` branching works on
+ * a hook error exactly as documented, rather than reading `undefined`.
+ *
+ * This mirrors the classic event path, where the payload of an `AdEventType`
+ * `ERROR` event is `Error & AdErrorPayload`. One shape, both delivery styles.
+ *
+ * `NativeError` itself is deliberately not widened: it is shared with legacy
+ * code paths that have no structured payload to supply.
+ */
+export type AdError = NativeError & AdErrorPayload;

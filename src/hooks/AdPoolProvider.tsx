@@ -20,13 +20,29 @@ import * as React from 'react';
 import type { AdPoolConfig } from '../types/AdPool';
 
 export type AdPoolProviderProps = {
-  /** Pool configs to own for the provider lifetime (typically from AdPoolPresets). */
+  /**
+   * Pool configs to own for the provider lifetime (typically from
+   * AdPoolPresets).
+   *
+   * Reconciled by `poolId`, not by array identity: the provider creates pools
+   * for ids that appear, destroys pools for ids that disappear, and leaves
+   * existing pools untouched when only the array identity changed. A forgotten
+   * `useMemo` therefore cannot tear down and recreate native pools every
+   * render. `useMemo` is an optimization here, never a correctness
+   * requirement.
+   *
+   * Reusing a `poolId` with a different config replaces that pool, because the
+   * id is the identity.
+   */
   pools: AdPoolConfig[];
   children: React.ReactNode;
 };
 
 /**
- * Declarative pool ownership. Creates pools on mount and destroys them on unmount.
+ * Declarative pool ownership. Creates pools for the configs it is given and
+ * destroys them on unmount, reconciling by `poolId` on every render rather
+ * than by array identity.
+ *
  * Stub: passes children through until native pool wiring lands.
  */
 export function AdPoolProvider(props: AdPoolProviderProps): React.ReactElement {

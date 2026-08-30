@@ -17,7 +17,6 @@
 
 import type { AdPoolConfig } from '../types/AdPool';
 import type { FullscreenAdFormat } from '../types/FullscreenAdFormat';
-import type { RequestOptions } from '../types/RequestOptions';
 import { AdFormat } from '../types/AdFormat';
 
 /**
@@ -27,18 +26,33 @@ import { AdFormat } from '../types/AdFormat';
 export const AdPoolPresets = {
   /**
    * Fullscreen buffer sized for this backend. Safe on every backend.
+   *
+   * NOTE (superseded): ratified expiry decision point 9. `FullscreenAdFormat`
+   * includes rewarded interstitial, which Android classic's preload registry
+   * rejects while iOS accepts it, so this preset is pending a capability gate
+   * and a hard error at pool creation on Android. Point 10 also applies to the
+   * app-wide cap this preset's depth competes for: the effective cap is
+   * server-delivered and is reported as `null`. See the canonical inventory
+   * expiry record published on the internal tracker as
+   * `inventory-expiry-canonical.md`.
+   *
+   * Takes the same `Partial<AdPoolConfig>` override bag as `display`, because
+   * fullscreen is the one family where `bufferSize` above 1 is meaningful:
+   * `AdPoolPresets.fullscreen(format, unit, { bufferSize: 2 })` is the intended
+   * way to ask for the depth Google recommends per preload ID. Pass request
+   * options as `{ requestOptions }`.
    */
   fullscreen(
     format: FullscreenAdFormat,
     adUnitId: string,
-    requestOptions?: RequestOptions,
+    options?: Partial<AdPoolConfig>,
   ): AdPoolConfig {
     return {
       poolId: `fullscreen-${format}-${adUnitId}`,
       formats: [format],
       adUnitId,
-      requestOptions,
       bufferSize: 1,
+      ...options,
     };
   },
 

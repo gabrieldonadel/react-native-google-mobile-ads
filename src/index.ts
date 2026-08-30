@@ -51,16 +51,16 @@ export { NativeMediaView } from './ads/native-ad/NativeMediaView';
 export { NativeAsset, NativeAssetType } from './ads/native-ad/NativeAsset';
 export { GAMBannerAd } from './ads/GAMBannerAd';
 export { GAMInterstitialAd } from './ads/GAMInterstitialAd';
-export { CompetitiveAdRequest } from './ads/CompetitiveAdRequest';
+export { MultiFormatAdRequest } from './ads/MultiFormatAdRequest';
 export {
-  CompetitiveBannerAdView,
-  type CompetitiveBannerAdHandle,
-  type CompetitiveBannerAdViewProps,
-} from './ads/CompetitiveBannerAdView';
+  MultiFormatBannerAdView,
+  type MultiFormatBannerAdHandle,
+  type MultiFormatBannerAdViewProps,
+} from './ads/MultiFormatBannerAdView';
 export { AdPools } from './AdPools';
 export { getAdCapabilities } from './capabilities/getAdCapabilities';
 export { AdPoolPresets } from './capabilities/AdPoolPresets';
-export { CompetitiveAdPresets } from './capabilities/CompetitiveAdPresets';
+export { MultiFormatAdPresets } from './capabilities/MultiFormatAdPresets';
 export { NativeError } from './internal/NativeError';
 export { useAppOpenAd } from './hooks/useAppOpenAd';
 export { useInterstitialAd } from './hooks/useInterstitialAd';
@@ -70,6 +70,6 @@ export { useForeground } from './hooks/useForeground';
 export { AdPoolProvider } from './hooks/AdPoolProvider';
 export { useAdPool } from './hooks/useAdPool';
 export { usePooledAd } from './hooks/usePooledAd';
-export { useCompetitiveAd } from './hooks/useCompetitiveAd';
+export { useMultiFormatAd } from './hooks/useMultiFormatAd';
 export { RevenuePrecisions } from './common/constants';
 export * from './types';
