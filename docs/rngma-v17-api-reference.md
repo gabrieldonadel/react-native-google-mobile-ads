@@ -10,6 +10,45 @@ Covers today’s source-compatible shims plus the additive v17 types and stubs
 
 ---
 
+## Contents
+
+- [Which API to reach for](#which-api-to-reach-for)
+- [ELI5: what the new APIs are for](#eli5-what-the-new-apis-are-for)
+- [Compatibility](#compatibility)
+- [Installation surface (unchanged)](#installation-surface-unchanged)
+- [Module / consent / request (shim)](#module--consent--request-shim)
+- [Fullscreen ads (shim)](#fullscreen-ads-shim)
+- [Banner ads (shim)](#banner-ads-shim)
+- [Native ads (shim)](#native-ads-shim)
+- [Capability discovery (new)](#capability-discovery-new)
+- [Multi-format request (new)](#multi-format-request-new)
+- [Ad pools (new)](#ad-pools-new)
+  - [Availability (`getAvailability`)](#availability-getavailability)
+  - [Expiry: two different scopes](#expiry-two-different-scopes)
+- [Presets (new)](#presets-new)
+- [Hooks / provider (new)](#hooks--provider-new)
+- [Metadata (additive)](#metadata-additive)
+- [Error payload (additive)](#error-payload-additive)
+- [Config defaults and `adServer` asymmetry](#config-defaults-and-adserver-asymmetry)
+- [Usage examples](#usage-examples)
+- [Migration sketches](#migration-sketches)
+- [First failure modes](#first-failure-modes)
+- [Out of this surface (v1)](#out-of-this-surface-v1)
+
+---
+
+## Which API to reach for
+
+| Need | Reach for |
+| ---- | --------- |
+| Keep today's create/load/show or `<BannerAd>` / `NativeAd` | Existing shims (no provider, no pool) |
+| Warm fullscreen inventory and poll at show time | `AdPoolPresets.fullscreen` + `AdPoolProvider` / `usePooledAd`, or imperative `AdPools.create` |
+| Warm display (native/banner) inventory | `AdPoolPresets.display` + provider / `usePooledAd` (depth 1 / emulated preload today) |
+| One request, native **or** banner winner (count 1) | `useMultiFormatAd` or `MultiFormatAdRequest` (+ `MultiFormatAdPresets.nativeOrBanner`) |
+| Ask what this binary can do | `getAdCapabilities()` (prefer presets over hand-rolled matrices) |
+
+Details and ownership rules live in the sections below. Expiry and staleness are stated once in [Expiry: two different scopes](#expiry-two-different-scopes).
+
 ## ELI5: what the new APIs are for
 
 Today’s APIs still work: create an ad, load it, show it (or mount a banner). The new surface adds two ideas on top of that, without forcing you to rewrite existing screens.
@@ -24,18 +63,18 @@ Sometimes you do not care whether the fill is a **native** ad or a **banner**, y
 
 **Multi-format is not multi-count.** Multi-format means _several formats compete for one ad_. Multi-count (several ads returned from one request, via `numberOfAds` / `requestCount`) is **out of v1** and unsupported on mediated units.
 
-You get back one handle (or errors). Render a native winner with `<NativeAdView>`; render a banner winner with `<MultiFormatBannerAdView>` (attach-only: it does not load again).
+You get back one handle (or errors). Render a native winner with `<NativeAdView>`; render a banner winner with `<MultiFormatBannerAdView>` (attach-only: it does not load again). In React, `useMultiFormatAd` owns that load lifecycle; imperatively, use `MultiFormatAdRequest`.
 
 Use this when the UI can show either shape. Skip it when you already know you only want a banner component or only a native layout.
 
 ### Ad pools: “keep something ready, refill when you take one”
 
-A **pool** is a named buffer of ads for a placement (`poolId` + formats + unit). When you need an ad, you **`poll()`** one out; the pool tries to refill in the background. Depending on the **backend and formats**, that buffer may:
+A **pool** is a named buffer of ads for a placement (`poolId` + formats + unit). When you need an ad, you **`poll()`** one out; the pool is designed to refill in the background. Depending on the **backend and formats**, that buffer may:
 
 - **preload** via the platform SDK preloader when Google supports it, which today means interstitial, rewarded and app open on both classic backends, plus **rewarded interstitial on iOS only**: Android's preload registry has no slot for that format and rejects it,
 - hold **more than one** ready ad **on those fullscreen formats**, where Google recommends a buffer of 2 per preload ID under an app-wide cap the SDK resolves at runtime from server-delivered settings, which is why `maxManagedPoolAds` is reported as `null` rather than a number,
 - or fill using **multi-format requests** inside the pool when the formats are native/banner and that is the honest way to request them,
-- or run as a depth-1 self-refill when there is no SDK display preloader, which is the case for **banner and native on both classic backends**, since neither iOS nor classic Android ships a display preloader. Still a pool from your point of view: create reports `degraded: true` with reason `'pool/emulated-no-sdk-preloader'`, matching `getAdCapabilities().displayPreload === 'emulated'`. The token `emulated` is a capability / reason value, not a field on `AdPool` or `resolved`.
+- or run as a depth-1 self-refill when there is no SDK display preloader. That is the case for **banner and native on both classic backends**: neither iOS nor classic Android ships a display preloader. Create still reports `degraded: true` with reason `'pool/emulated-no-sdk-preloader'`, matching `getAdCapabilities().displayPreload === 'emulated'`. The token `emulated` is a capability / reason value, not a field on `AdPool` or `resolved`.
 
 So buffer depth greater than 1 is a **fullscreen** capability today. A display pool asking for depth clamps to 1 and tells you it did; see the degrade example below.
 
@@ -47,15 +86,15 @@ Ads do not stay usable forever, and what the library can honestly tell you about
 
 Google’s SDKs do not support every combination of format × buffer size × preload × multi-format × mediation. Mixing fullscreen with display in one pool, asking for buffer depths the backend cannot honor, illegal banner sizes in a multi-format request, or formats that are simply `unavailable` on this binary are examples of things that **cannot** all be true at once.
 
-So the library does **not** ask you to memorize the matrix. At create time it validates the config against what this app can actually do:
+So the library does **not** ask you to memorize the matrix. At create time it is designed to validate the config against what this app can actually do:
 
 - **`AdPools.create(config)`** returns `Promise<AdPool>` and **rejects** when the request is impossible (e.g. a format would be dropped, unsupported mix). Catch with `.catch()` / `try` around `await`.
 - **`MultiFormatAdRequest.create(adUnitId, options)`** is **synchronous** and **throws** when the request is impossible (e.g. illegal size). Catch with `try/catch`.
 - **Loud degrade** when a milder adjustment is safe (e.g. clamp buffer size, display preload without an SDK preloader); you see that on `resolved` / `degraded` / `degradeReasons`.
 
-Presets (`AdPoolPresets`, `MultiFormatAdPresets`) aim to request only configs that survive that check. Hand-written configs are welcome; just expect create-time validation instead of silent wrong behavior later.
+Presets (`AdPoolPresets`, `MultiFormatAdPresets`) aim to request only configs that survive that check. Hand-written configs go through the same create-time validation.
 
-**Short version:** multi-format = one request, several format options, one winner. Pool = keep inventory warm when the platform allows it, refill after poll, optionally using multi-format loads inside. Many useful setups work; impossible ones fail (or degrade) when you create the pool/request, not when the user is mid-session.
+None of the additive pool / multi-format / hook paths are wired to native yet. Each section below states what the stub does today (no-op, empty outcome, or reject).
 
 ---
 
@@ -134,7 +173,7 @@ Components: `<BannerAd>`, `<GAMBannerAd>`.
 **Additive callbacks:**
 
 - `onAdLoaded` dimensions may include `responseInfo?: ResponseInfo`
-- `onAdFailedToLoad` may carry `AdErrorPayload` fields (`reason`, `phase`) in addition to legacy `Error`. Typed as `Error & Partial<AdErrorPayload>` so existing `(error: Error) => void` handlers stay assignable under `strictFunctionTypes` — unlike hook / event surfaces where `reason` and `phase` are required.
+- `onAdFailedToLoad` may carry `AdErrorPayload` fields (`reason`, `phase`) in addition to legacy `Error`. Typed as `Error & Partial<AdErrorPayload>` so existing `(error: Error) => void` handlers stay assignable under `strictFunctionTypes`, unlike hook / event surfaces where `reason` and `phase` are required.
 
 Sizes: `BannerAdSize`, `GAMBannerAdSize` (unchanged).
 
@@ -164,6 +203,12 @@ enum AdFormat {
   NATIVE = 'native',
 }
 
+type FullscreenAdFormat =
+  | AdFormat.APP_OPEN
+  | AdFormat.INTERSTITIAL
+  | AdFormat.REWARDED
+  | AdFormat.REWARDED_INTERSTITIAL;
+
 type CapabilitySupport = 'supported' | 'emulated' | 'degraded' | 'experimental' | 'unavailable';
 
 type AdCapabilities = {
@@ -188,44 +233,9 @@ function getAdCapabilities(): AdCapabilities;
 - **Stub today:** returns placeholder values: `backend: 'android-classic'`, `sdkVersion: '0.0.0-stub'`, every format and capability as `unavailable`, `maxManagedPoolAds: null`, `mediation: 'unknown'`. These are not live device/SDK capability readings.
 - Prefer **presets** for common cases; do not re-implement capability matrices in app code.
 - Gate rewarded interstitial pooling with `fullscreenPreloadFormats[AdFormat.REWARDED_INTERSTITIAL]` before `AdPools.create`: on Android classic that format is `unavailable` and create hard-errors with reason `'pool/format-preload-unsupported'`.
-- Gate `AdPool.peekResponseInfo()` with `poolResponseInfoPeek`: classic Android is `unavailable` (no peek API) and peek hard-errors with `'pool/peek-unsupported'`; classic iOS is `supported` when wired. A resolved `null` means empty head only on a supported backend — never "unsupported".
-- When native-wired, classic fullscreen preload may report `experimental` while upstream preload APIs remain beta. Treat `experimental` as maturity honesty, not a veto of a supported path.
+- Gate `AdPool.peekResponseInfo()` with `poolResponseInfoPeek`: classic Android is `unavailable` (no peek API) and peek hard-errors with `'pool/peek-unsupported'`; classic iOS is `supported` when wired. A resolved `null` means empty head only on a supported backend, never "unsupported".
+- When native-wired, classic fullscreen preload may report `experimental` while upstream preload APIs remain beta. `experimental` means maturity, not a veto of a supported path.
 - **Anti-pattern:** do not pre-flight-branch on the full capability matrix before every call. Use presets / hard-errors at `create()`, and reserve capability reads for UI gating or diagnostics.
-
----
-
-## Presets (new)
-
-```ts
-type AdPoolPresetOverrides = Omit<Partial<AdPoolConfig>, 'formats' | 'adUnitId'>;
-
-AdPoolPresets.fullscreen(
-  format: FullscreenAdFormat,
-  adUnitId: string,
-  options?: AdPoolPresetOverrides,
-): AdPoolConfig; // poolId defaults to `fullscreen-${format}-${adUnitId}`
-
-AdPoolPresets.display(adUnitId: string, options?: AdPoolPresetOverrides): AdPoolConfig;
-// poolId defaults to `display-${adUnitId}`
-
-MultiFormatAdPresets.nativeOrBanner(
-  bannerSizes: MultiFormatBannerSize[],
-): MultiFormatAdRequestOptions;
-```
-
-Presets return plain configuration objects. `AdPools.create` / `MultiFormatAdRequest.create` validate them the same as hand-written ones.
-
-`AdPoolPresets.fullscreen` accepts rewarded interstitial in the type for cross-platform presets, but create hard-errors on Android classic when that format's preload capability is `unavailable`. Check `fullscreenPreloadFormats` first, or catch `'pool/format-preload-unsupported'`.
-
-Both pool presets take the same `AdPoolPresetOverrides` bag, spread over the preset defaults. That bag deliberately omits `formats` and `adUnitId`: those come from the positional parameters, so `display()` cannot be handed `formats: [INTERSTITIAL]` or a different unit at the type level. That matters most on `fullscreen`, because fullscreen is the only family where `bufferSize` above 1 is meaningful. Default depth is `1` so create succeeds under a tight app-wide cap; Google recommends `2` per preload ID, and publishers opt in explicitly:
-
-```ts
-AdPoolPresets.fullscreen(AdFormat.INTERSTITIAL, unit, { bufferSize: 2 });
-AdPoolPresets.fullscreen(AdFormat.INTERSTITIAL, unit, { requestOptions: { keywords: ['games'] } });
-AdPoolPresets.fullscreen(AdFormat.APP_OPEN, unit, { stalenessWindowMillis: 2 * 60 * 60 * 1000 });
-```
-
-The computed `poolId` default (`fullscreen-${format}-${adUnitId}`, `display-${adUnitId}`) survives unless you override it. Prefer reading `config.poolId` at the consumer rather than hand-retyping the template: the preset return type carries the template literal, so a typo fails at compile time.
 
 ---
 
@@ -254,7 +264,7 @@ type MultiFormatAdRequestOptions = RequestOptions & {
   stalenessWindowMillis?: number; // publisher policy; defaults to guidance/other
 };
 
-// Module-local composition helper — not exported. Consumers import
+// Module-local composition helper (not exported). Consumers import
 // `MultiFormatAdHandle`. Shared with pooled ads: same identity, same policy
 // surface, same words.
 type MultiFormatAdHandleBase = AdIdentity &
@@ -294,9 +304,7 @@ class MultiFormatAdRequest {
 
 **Stub:** `load()` rejects with `"MultiFormatAdRequest.load is not implemented"`.
 
-A load never resolves `stale-by-policy`. This library performed the load and returns the handles out of its own completion callback, so its observed time starts at hand-off. That is a statement about provenance, not a guarantee inherited from `poll()`. See [Expiry: two different scopes](#expiry-two-different-scopes).
-
-Imperative callers own every returned handle: both `destroy()` and the staleness check are theirs, and `useMultiFormatAd` does both for you. See [Expiry: two different scopes](#expiry-two-different-scopes).
+A load never resolves `stale-by-policy` (library-performed load; observed time starts at hand-off). Provenance, ownership, and staleness rules: [Expiry: two different scopes](#expiry-two-different-scopes).
 
 The imperative `load()` resolves the `{ ads, errors }` pair rather than a `MultiFormatLoadResult`, so there is no `status` word on that path: both arrays empty is a clean no-fill, a non-empty `errors` with a handle is the partial case, and a non-empty `errors` with no handle is a failure. `MultiFormatLoadResult` is what `useMultiFormatAd().load()` resolves.
 
@@ -395,7 +403,7 @@ type AdExpiry = {
 type PooledAdIdentity = AdIdentity;
 type PooledAdExpiry = AdExpiry;
 
-// Module-local composition helper — not exported. Consumers import `PooledAd`.
+// Module-local composition helper (not exported). Consumers import `PooledAd`.
 type PooledAdBase = AdIdentity &
   AdExpiry & {
     provenance: AdInventoryProvenance;
@@ -489,7 +497,7 @@ type AdPoolEvent =
       reason: 'stale-by-policy' | 'refresh';
       provenance: 'pool/emulated-no-sdk-preloader';
     }
-  // Library-managed only. replacedAdId correlates with the preceding expired event.
+  // Library-managed only: replacedAdId correlates with the preceding expired event.
   | {
       type: 'refreshed';
       poolId: string;
@@ -511,12 +519,12 @@ On a pool the library manages itself, an eviction and its replacement are correl
 
 `AdPool.getAvailability()` returns `{ available, observedCount }`. The count is **required**, not optional:
 
-- **SDK-managed pools:** both classic platforms expose it — Android `getNumAdsAvailable(preloadId)` and iOS `numberOfAdsAvailableWithPreloadID:`.
+- **SDK-managed pools:** both classic platforms expose it (Android `getNumAdsAvailable(preloadId)` and iOS `numberOfAdsAvailableWithPreloadID:`).
 - **Library-managed (emulated) pools:** the library reports its own buffer depth.
 
 `available` is `observedCount > 0`. Neither field sweeps for expiry on the Android V2 path, so both are **upper bounds** (an ad past the platform TTL can still be counted until the next sweep). Whether iOS sweeps is UNKNOWN. Prefer this snapshot (or the hook's live `available` / `observedCount`) over assuming a retained depth equal to `bufferSize`: the SDK may optimize cache order, and the app-wide cap is server-delivered (`maxManagedPoolAds` reports `null`).
 
-The hook mirrors the same numbers on every `usePooledAd` result arm as event-driven fields (updated from pool events and after each poll settles — no timer, no polling loop).
+The hook mirrors the same numbers on every `usePooledAd` result arm as event-driven fields (updated from pool events and after each poll settles; no timer, no polling loop).
 
 ### Expiry: two different scopes
 
@@ -539,7 +547,7 @@ Two scopes, named apart:
 | Did the ad or handle **I am holding** age?             | `isStaleByPolicy()` / `onStaleByPolicy()` on that `PooledAd` or handle                          |
 | Am I at risk of rendering something stale from a hook? | The hooks reduce that risk; they do not remove it. See point 5 below                            |
 
-A polled ad has left the pool, because ownership transfers on `poll()`, so pool events can never identify it. That is why the check lives on the handle too. The staleness timer lives on the held ad, not on the pool: it keeps running after `release()` and after pool `destroy()`. Whether a pool's `destroy()` also tears down the native resources of an ad it already handed out is **unverified** (open probe); do not build on either answer — destroy held ads explicitly when you are done.
+A polled ad has left the pool, because ownership transfers on `poll()`, so pool events can never identify it. That is why the check lives on the handle too. The staleness timer lives on the held ad, not on the pool: it keeps running after `release()` and after pool `destroy()`. Whether a pool's `destroy()` also tears down the native resources of an ad it already handed out is **unverified** (open probe); do not build on either answer; destroy held ads explicitly when you are done.
 
 **The canonical pattern is to poll at show time.** Google's own guidance is to leave ads in the SDK cache until you are ready to show, so the SDK can refresh and reorder them. That is the strongest surviving part of this contract.
 
@@ -554,6 +562,42 @@ A polled ad has left the pool, because ownership transfers on `poll()`, so pool 
 7. **Library-managed pool refill is demand-gated.** Policy eviction of pool-owned inventory does not trigger an unprompted forever-refill; the pool refills in response to consumer demand (for example after `poll()`), because unshown fills depress match rate. SDK-managed pools follow the platform preloader's own refill behavior.
 8. **Poll order does not follow preload order.** The platform buffer is a priority queue ordered by a value-like key, not a queue in arrival order.
 9. **Imperative callers own the check.** `AdPools.create` + `poll()`, or `MultiFormatAdRequest.load()`, hand you objects with no hook watching them, so the staleness check and `destroy()` are both yours. After `release()`, the same is true: the policy timer lives on the object. Pool `destroy()` does not cancel it.
+
+---
+
+## Presets (new)
+
+```ts
+type AdPoolPresetOverrides = Omit<Partial<AdPoolConfig>, 'formats' | 'adUnitId'>;
+
+AdPoolPresets.fullscreen(
+  format: FullscreenAdFormat,
+  adUnitId: string,
+  options?: AdPoolPresetOverrides,
+): AdPoolConfig; // poolId defaults to `fullscreen-${format}-${adUnitId}`
+
+AdPoolPresets.display(adUnitId: string, options?: AdPoolPresetOverrides): AdPoolConfig;
+// poolId defaults to `display-${adUnitId}`
+
+MultiFormatAdPresets.nativeOrBanner(
+  bannerSizes: MultiFormatBannerSize[],
+): MultiFormatAdRequestOptions;
+```
+
+Presets return plain configuration objects. `AdPools.create` / `MultiFormatAdRequest.create` validate them the same as hand-written ones.
+
+`AdPoolPresets.fullscreen` accepts rewarded interstitial in the type for cross-platform presets, but create hard-errors on Android classic when that format's preload capability is `unavailable`. Check `fullscreenPreloadFormats` first, or catch `'pool/format-preload-unsupported'`.
+
+Both pool presets take the same `AdPoolPresetOverrides` bag, spread over the preset defaults. That bag deliberately omits `formats` and `adUnitId`: those come from the positional parameters, so `display()` cannot be handed `formats: [INTERSTITIAL]` or a different unit at the type level. Fullscreen is the only family where `bufferSize` above 1 is meaningful. Preset default depth is `1` (create under a tight app-wide cap); Google recommends `2` per preload ID. See [Buffer depth greater than 1](#buffer-depth-greater-than-1-a-fullscreen-capability) for the opt-in call and resolved fields.
+
+Other override examples:
+
+```ts
+AdPoolPresets.fullscreen(AdFormat.INTERSTITIAL, unit, { requestOptions: { keywords: ['games'] } });
+AdPoolPresets.fullscreen(AdFormat.APP_OPEN, unit, { stalenessWindowMillis: 2 * 60 * 60 * 1000 });
+```
+
+The computed `poolId` default (`fullscreen-${format}-${adUnitId}`, `display-${adUnitId}`) survives unless you override it. Prefer reading `config.poolId` at the consumer rather than hand-retyping the template: the preset return type carries the template literal, so a typo fails at compile time. The same convention is used in the [provider examples](#2-provider--display-pool-poll-and-show-a-banner).
 
 ---
 
@@ -598,7 +642,7 @@ function useAdPool(poolId: string): UseAdPoolResult;
 // and UsePooledAdStatus.
 type UsePooledAdResultBase = {
   // Same vocabulary as useAdPool; distinguishes absent / creating / ready
-  // without pairing a second hook. useAdPool still needed for pool / retry.
+  // without pairing a second hook; useAdPool still needed for pool / retry.
   poolStatus: UseAdPoolStatus;
   available: boolean; // observedCount > 0; event-driven upper bound
   observedCount: number; // always present; upper bound (no Android V2 expiry sweep)
@@ -675,13 +719,13 @@ Trust those as documented behavior. TypeScript will not catch a violation.
 
 `usePooledAd` is **state-first**. Calling `poll()` updates `status`, `ad`, and `error` on the hook, so you do not track loading, stash the ad, or destroy it yourself. It also:
 
-- **coalesces** concurrent calls onto the in-flight poll, so a double tap — or React StrictMode in development double-invoking an effect that calls `poll()` — cannot burn two ads (**per hook instance** — see shared-`poolId` note below),
+- **coalesces** concurrent calls onto the in-flight poll, so a double tap (or React StrictMode in development double-invoking an effect that calls `poll()`) cannot burn two ads (**per hook instance**; see shared-`poolId` note below),
 - **destroys** the previous ad when a later poll supersedes it, and every held ad on unmount,
 - **subscribes** to `onStaleByPolicy`: unrendered inventory is destroyed, `ad` cleared, and `status` set to `'stale-by-policy'`; already-rendered banner/native inventory is left in place,
-- **consumes** a fullscreen ad it still owns when `await ad.show()` **fulfills** (show-promise settle): destroys the spent ad, clears `ad`, and sets `status` to `'consumed'` (not an error; a later show attempt on a released reference fails with reason `'ad-already-used'`). The milestone is **not** `OPENED`, `CLOSED`, or `EARNED_REWARD` — native show promises resolve after `present`/`show` without waiting for those events (Android `FullScreenAdModule`, iOS `RNGoogleMobileAdsFullScreenAd`; classic `useFullScreenAd` tracks `OPENED`/`CLOSED` for observation only and does not auto-destroy),
+- **consumes** a fullscreen ad it still owns when `await ad.show()` **fulfills** (show-promise settle): destroys the spent ad, clears `ad`, and sets `status` to `'consumed'` (not an error; a later show attempt on a released reference fails with reason `'ad-already-used'`). The milestone is **not** `OPENED`, `CLOSED`, or `EARNED_REWARD`: native show promises resolve after `present`/`show` without waiting for those events (Android `FullScreenAdModule`, iOS `RNGoogleMobileAdsFullScreenAd`; classic `useFullScreenAd` tracks `OPENED`/`CLOSED` for observation only and does not auto-destroy),
 - **never rejects**: `poll()` resolves into the same `PollResult` the state reflects, so the return value is optional convenience for “poll and show in one handler”.
 
-**Do not call `destroy()` on inventory the hook still owns.** That leaves the hook able to report `filled` / `loaded` with a dead ad — the same ownership rule as the inner `NativeAd` on a native arm. Early `destroy()` while hook-owned also drops listeners, so post-show events cannot be observed. Call `release()` first if you need to own destruction or post-show observation (handing the ad to a store, wiring your own `CLOSED` listener, etc.), or leave destruction to the hook.
+**Do not call `destroy()` on inventory the hook still owns.** That leaves the hook able to report `filled` / `loaded` with a dead ad (the same ownership rule as the inner `NativeAd` on a native arm). Early `destroy()` while hook-owned also drops listeners, so post-show events cannot be observed. Call `release()` first if you need to own destruction or post-show observation (handing the ad to a store, wiring your own `CLOSED` listener, etc.), or leave destruction to the hook.
 
 Use `release()` when the ad must outlive the hook, or when you need post-show events on a fullscreen ad. It clears hook state to `status: 'idle'` (among the current arms) so unmount cleanup will not destroy an ad someone else now owns. After `release()`, the caller owns both `destroy()` and the staleness check: the policy timer lives on the ad and is unaffected by pool `destroy()`. Ordering is guaranteed: `release()` called immediately after `await poll()` returns the ad that poll just produced, without waiting for a render, because the hook tracks the current ad in a ref alongside state.
 
@@ -703,20 +747,20 @@ Sibling guarantees that do match:
 - the hook **owns** the handles it returns,
 - it **destroys** them on unmount, and when a later `load()` supersedes them,
 - it **subscribes** per handle to `onStaleByPolicy`, drops a stale unrendered handle from `ads`, and reports `status: 'stale-by-policy'` once no showable handle remains, retaining prior load `errors`,
-- `load()` **coalesces** concurrent calls onto the in-flight load (**per hook instance**), same parity as `poll()` — including under StrictMode double-invoke of the mount effect,
+- `load()` **coalesces** concurrent calls onto the in-flight load (**per hook instance**), same parity as `poll()`, including under StrictMode double-invoke of the mount effect,
 - `load()` **never rejects**: it resolves a `MultiFormatLoadResult` mirroring the state it just set,
 - `release()` hands the current handles to the caller and clears hook state to `status: 'idle'` (among the current arms), returning `[]` when nothing is held, with the same post-`await` ordering guarantee,
-- callers **must not** `destroy()` handles the hook still owns — `release()` first.
+- callers **must not** `destroy()` handles the hook still owns; `release()` first.
 
 ### Callback identity and argument freshness
 
 **Returned callbacks keep the same identity for the life of the hook instance.** `poll`, `load`, `release`, and `retry` are stable references, so listing them in a dependency array does not re-run the effect. That is what makes `useEffect(() => { void load(); }, [load])` load once per mount instead of on every render.
 
-**Hook arguments are not frozen into those callbacks.** `poolId`, `adUnitId`, and `options` are sampled when the callback runs (the implementation holds them in refs updated each render). Passing a fresh inline options object every render — including `MultiFormatAdPresets.nativeOrBanner(...)` called in the render body — does **not** change `load`'s identity and does **not** re-fire an effect that depends only on `[load]`. The next `load()` or `poll()` uses the latest arguments.
+**Hook arguments are not frozen into those callbacks.** `poolId`, `adUnitId`, and `options` are sampled when the callback runs (the implementation holds them in refs updated each render). Passing a fresh inline options object every render (including `MultiFormatAdPresets.nativeOrBanner(...)` called in the render body) does **not** change `load`'s identity and does **not** re-fire an effect that depends only on `[load]`. The next `load()` or `poll()` uses the latest arguments.
 
 If you need to reload when options change, depend on those options (or a value derived from them) yourself and call `load()`; do not expect `[load]` alone to detect argument changes.
 
-**Coalescing and StrictMode.** Both `poll()` and `load()` coalesce concurrent calls onto one in-flight promise per hook instance. Joiners share the result started with the arguments current when the flight began; after it settles, the next call samples current arguments. React StrictMode in development double-invokes effects: without coalescing, the documented mount-effect pattern would issue two polls or two loads. Coalescing is still per hook instance — two components sharing one `poolId` do not share an in-flight poll (see shared-`poolId` note above).
+**Coalescing and StrictMode.** Both `poll()` and `load()` coalesce concurrent calls onto one in-flight promise per hook instance. Joiners share the result started with the arguments current when the flight began; after it settles, the next call samples current arguments. React StrictMode in development double-invokes effects: without coalescing, the documented mount-effect pattern would issue two polls or two loads. Coalescing is still per hook instance: two components sharing one `poolId` do not share an in-flight poll (see shared-`poolId` note above).
 
 `useAdPool` exposes `status` rather than `ready` + `degraded` booleans, and does **not** mirror degrade reasons; read `pool.resolved.degradeReasons`, the single source of truth.
 
@@ -726,7 +770,7 @@ If you need to reload when options change, depend on those options (or a value d
 
 `AdPoolProvider` does **not** inject ads into the tree by itself. It only **owns** pools for its lifetime:
 
-1. You pass configs (usually from `AdPoolPresets.*`). Each config has a stable `poolId` (presets pick one for you, e.g. `display-${adUnitId}`).
+1. You pass configs (usually from `AdPoolPresets.*`). Each config has a stable `poolId` (see [Presets](#presets-new)).
 2. On mount (when wired), the provider calls `AdPools.create` for each config and keeps those native pools alive.
 3. Descendants look pools up **by that same `poolId`** via `useAdPool(poolId)` / `usePooledAd(poolId)`.
 4. You still **poll** when you want inventory, then **render or `show()`** the returned `PooledAd`. The provider never auto-shows.
@@ -750,7 +794,7 @@ If you never wrap with `AdPoolProvider`, you can still:
 - use today’s shims (`InterstitialAd`, `<BannerAd>`, `NativeAd`, existing hooks) with **no** pool, or
 - call `AdPools.create` / `AdPools.get` imperatively and poll yourself.
 
-**Rules:** never `poll()` during render; pool ownership stays with the provider or `AdPools.create`, never with the consumer hook. `usePooledAd` and `useMultiFormatAd` destroy the inventory they hand you on unmount, so call `release()` if it must outlive the hook — and before you call `destroy()` yourself. Imperative callers of `AdPools.create` / `MultiFormatAdRequest.load` own `destroy()` and the age check themselves: see [Expiry: two different scopes](#expiry-two-different-scopes).
+**Rules:** never `poll()` during render; pool ownership stays with the provider or `AdPools.create`, never with the consumer hook. `usePooledAd` and `useMultiFormatAd` destroy the inventory they hand you on unmount, so call `release()` if it must outlive the hook, and before you call `destroy()` yourself. Imperative callers of `AdPools.create` / `MultiFormatAdRequest.load` own `destroy()` and the age check themselves: see [Expiry: two different scopes](#expiry-two-different-scopes).
 
 **Stub:** provider is a pass-through; `useAdPool` reports `absent` with a no-op `retry`; `usePooledAd` reports `idle` and its `poll()` resolves `{ status: 'empty' }`; `useMultiFormatAd` reports `idle` and its `load()` resolves `{ status: 'no-fill', ads: [], errors: [] }`. Only the imperative `MultiFormatAdRequest.load()` still rejects.
 
@@ -867,6 +911,22 @@ Legacy `code` / `message` values stay unchanged. Fail-to-show uses `ERROR` with 
 
 ---
 
+## Config defaults and `adServer` asymmetry
+
+Optional fields on `AdPoolConfig` mean the following when omitted:
+
+| Field | When omitted |
+| ----- | ------------ |
+| `bufferSize` | Presets supply `1`. A hand-written config that omits it has **no documented numeric default** until native `AdPools.create` lands; do not assume depth. |
+| `pollTimeoutMillis` | No timeout is configured. `PollResult` / hook `'timeout'` is only reachable when you set a positive timeout (otherwise that switch arm is dead). |
+| `stalenessWindowMillis` | Pool applies Google's published guidance (four hours app open, one hour otherwise) and records the source on handed-out ads. See [Expiry](#expiry-two-different-scopes). |
+| `adServer` | Unspecified; classic AdMob vs GAM selection follows how you build the request when wired. |
+| `mediation` | Unspecified (`unknown` is the capability stub's mediation reading, not an implicit pool config default). |
+
+**`adServer` domain asymmetry (intentional):** `AdPoolConfig.adServer` is `'ad-manager' | 'admob'`. `MultiFormatAdRequestOptions.adServer` is `'ad-manager'` only, because multi-format banner sizes are the GAM / AdLoader-style path. Same field name, different domain.
+
+---
+
 ## Usage examples
 
 > Illustrative “when native lands” code. Today these APIs stub/reject as noted above;
@@ -913,7 +973,7 @@ Same story for `useInterstitialAd` / `NativeAd.createForAdRequest`: no `AdPoolPr
 
 ### 2. Provider + display pool: poll and show a banner
 
-Preset `AdPoolPresets.display(adUnitId)` sets `poolId` to `display-${adUnitId}`. Children must use **that** id: read it from the config rather than retyping the template.
+Children must use the same `poolId` the provider registered: read it from the preset config (see [Presets](#presets-new)).
 
 ```tsx
 import React, { useCallback, useMemo } from 'react';
@@ -951,7 +1011,7 @@ function FeedPlacement() {
     // Never call poll() during render, only from handlers or effects.
     // Concurrent calls coalesce per hook instance, so a double tap cannot
     // burn two ads. Do not mount two usePooledAd(sameId) owners on a
-    // depth-1 pool — one starves the other.
+    // depth-1 pool: one starves the other.
     void poll();
   }, [poll]);
 
@@ -1026,6 +1086,30 @@ export function AppWithDisplayPool() {
 
 **Takeaway:** the provider registers the pool; `usePooledAd(DISPLAY_POOL_ID)` is how a screen later consumes it. Changing `poolId` in the child without matching the provider config looks up nothing.
 
+#### What a loud degrade looks like
+
+Ask a **display** pool for depth and it clamps to 1, because neither classic backend ships an SDK display preloader. The pool still works; it tells you what it did rather than failing or pretending:
+
+```ts
+import { AdPoolPresets, AdPools, BannerAdSize, TestIds } from 'react-native-google-mobile-ads';
+
+const FEED_UNIT = TestIds.BANNER;
+const pool = await AdPools.create(
+  AdPoolPresets.display(FEED_UNIT, {
+    bannerSizes: [BannerAdSize.MEDIUM_RECTANGLE],
+    bufferSize: 3, // not honourable on a display pool today
+  }),
+);
+
+pool.resolved.requestedBufferSize; // 3
+pool.resolved.effectiveBufferSize; // 1
+pool.resolved.degraded; // true
+pool.resolved.degradeReasons;
+// ['pool/degraded-buffer-size', 'pool/emulated-no-sdk-preloader']
+```
+
+`useAdPool` surfaces the same thing as `status: 'ready-degraded'`. This is the difference between a **hard error** (the request is impossible: a format would be dropped, an illegal size, an unsupported mix) and a **loud degrade** (a milder adjustment was safe and is reported).
+
 ---
 
 ### 3. Provider + fullscreen pool: poll then `show()`
@@ -1060,8 +1144,8 @@ function LevelEndButton() {
     }
 
     // Take ownership before show/destroy. While the hook owns the ad, do not
-    // call destroy() — that would leave the hook reporting filled with a dead
-    // ad. release() clears hook state so CLOSED cleanup is yours alone.
+    // call destroy() (that would leave the hook reporting filled with a dead
+    // ad). release() clears hook state so CLOSED cleanup is yours alone.
     const next = release();
     if (!next) return;
     if (next.isStaleByPolicy()) {
@@ -1092,20 +1176,23 @@ export function AppWithFullscreenPool() {
 
 There is **no** `useInterstitialAd`-style show hook for pools on purpose: a polled fullscreen `PooledAd` already exposes `show()` and the same event listeners.
 
-If you keep the ad hook-owned instead of calling `release()`, `await ad.show()` and let the hook move to `status: 'consumed'` when that promise **fulfills** (it destroys the spent ad for you). Do not call `ad.destroy()` yourself in that path. **Footnote — two paths:**
+If you keep the ad hook-owned instead of calling `release()`, `await ad.show()` and let the hook move to `status: 'consumed'` when that promise **fulfills** (it destroys the spent ad for you). Do not call `ad.destroy()` yourself in that path. **Footnote: two paths:**
 
 - **Path A (`release()` then show):** Example 3 above. You own listeners through `CLOSED` / reward / paid, then `destroy()` yourself. Required whenever you need post-show observation.
 - **Path B (hook-owned show):** `'consumed'` fires on show-promise settle, then the hook destroys. That drops listeners, so you will **not** see `OPENED` / `CLOSED` / `EARNED_REWARD` afterward. Early `destroy()` while still hook-owned has the same effect.
 
-Rejected milestones for Path B: `OPENED` (native show promises do not wait for it), `CLOSED` / `EARNED_REWARD` (classic `useFullScreenAd` / `MobileAd` observation lifecycle — not the pool consume signal; waiting for them would keep the handle alive through the impression and contradict destroy-on-consume).
+Rejected milestones for Path B: `OPENED` (native show promises do not wait for it), `CLOSED` / `EARNED_REWARD` (classic `useFullScreenAd` / `MobileAd` observation lifecycle, not the pool consume signal; waiting for them would keep the handle alive through the impression and contradict destroy-on-consume).
 
-Holding a polled ad across a long session is allowed but is the consumer's risk: the pool cannot refresh an ad it no longer owns. `usePooledAd` covers the React case by destroying unrendered inventory that crosses the policy window and reporting `status: 'stale-by-policy'`; imperative holders run the check themselves. See [Expiry: two different scopes](#expiry-two-different-scopes).
+Holding a polled ad across a long session is the consumer's risk (the pool cannot refresh an ad it no longer owns). Rules: [Expiry: two different scopes](#expiry-two-different-scopes).
 
 #### Buffer depth greater than 1: a fullscreen capability
 
 Fullscreen formats have a real SDK preloader on both classic backends, so they can hold more than one ready ad. `AdPoolPresets.fullscreen` takes the override bag directly, so this is the one preset call where `bufferSize` is worth passing:
 
 ```ts
+import { AdFormat, AdPoolPresets, AdPools, TestIds } from 'react-native-google-mobile-ads';
+
+const UNIT = TestIds.INTERSTITIAL;
 const pool = await AdPools.create(
   AdPoolPresets.fullscreen(AdFormat.INTERSTITIAL, UNIT, {
     bufferSize: 2, // the depth Google recommends per preload ID
@@ -1119,26 +1206,6 @@ pool.resolved.degraded; // false
 The cap is app-wide across every format and preload ID, and the SDK resolves it at runtime from server-delivered settings rather than from a fixed number, so `maxManagedPoolAds` reports `null` and `effectiveBufferSize` is the value to read. Shallow pools coexist comfortably; many deep pools will clamp.
 
 Depth interacts with age rather than solving it: a deeper buffer means more ads aging at once, and it does not change what the library can observe. See [Expiry: two different scopes](#expiry-two-different-scopes).
-
-#### What a loud degrade looks like
-
-Ask a **display** pool for depth and it clamps to 1, because neither classic backend ships an SDK display preloader. The pool still works; it tells you what it did rather than failing or pretending:
-
-```ts
-const pool = await AdPools.create(
-  AdPoolPresets.display(FEED_UNIT, {
-    bufferSize: 3, // not honourable on a display pool today
-  }),
-);
-
-pool.resolved.requestedBufferSize; // 3
-pool.resolved.effectiveBufferSize; // 1
-pool.resolved.degraded; // true
-pool.resolved.degradeReasons;
-// ['pool/degraded-buffer-size', 'pool/emulated-no-sdk-preloader']
-```
-
-`useAdPool` surfaces the same thing as `status: 'ready-degraded'`. This is the difference between a **hard error** (the request is impossible: a format would be dropped, an illegal size, an unsupported mix) and a **loud degrade** (a milder adjustment was safe and is reported).
 
 ---
 
@@ -1347,7 +1414,7 @@ ad.addAdEventListener(AdEventType.ERROR, error => {
 ad.load();
 ```
 
-Banner prop form (`Partial` exception — `reason` / `phase` may be absent):
+Banner prop form (`Partial` exception; `reason` / `phase` may be absent):
 
 ```tsx
 <BannerAd
@@ -1366,12 +1433,16 @@ Where each failure shows up:
 
 | Surface                                  | Where the failure lands                                                                       |
 | ---------------------------------------- | --------------------------------------------------------------------------------------------- |
-| Pool creation                            | `useAdPool(…)` `status: 'error'` plus `error: AdError`; call `retry()` to try again           |
-| `poll()`                                 | `usePooledAd(…)` `status: 'no-fill' \| 'error'` plus `error: AdError`; `poll()` never rejects |
-| Multi-format hook load                   | `useMultiFormatAd(…).errors` (`AdError[]`) with `status: 'error'` or `'loaded-partial'`       |
-| Imperative `pool.poll()`                 | `PollResult` `no-fill` / `error` carrying `AdErrorPayload`; never a rejection                 |
-| Imperative `MultiFormatAdRequest.load()` | the resolved `errors: AdError[]`                                                              |
+| Classic `AdEventType.ERROR`              | Listener payload `Error & AdErrorPayload` (`reason` / `phase` required when wired)            |
 | Banner / GAM `onAdFailedToLoad`          | `Error & Partial<AdErrorPayload>` (additive; `reason` / `phase` optional)                     |
+| Pool `addListener` `{ type: 'error' }`   | `AdErrorPayload` on the event                                                                 |
+| Pool creation (provider)                 | `useAdPool(…)` `status: 'error'` plus `error: AdError`; call `retry()` to try again           |
+| Imperative `AdPools.create`              | Promise **rejects** (impossible config / stub)                                                |
+| `poll()` (hook)                          | `usePooledAd(…)` `status: 'no-fill' \| 'error'` plus `error: AdError`; `poll()` never rejects |
+| Imperative `pool.poll()`                 | `PollResult` `no-fill` / `error` carrying `AdErrorPayload`; never a rejection                 |
+| Multi-format hook load                   | `useMultiFormatAd(…).errors` (`AdError[]`) with `status: 'error'` or `'loaded-partial'`       |
+| Imperative `MultiFormatAdRequest.load()` | Resolved `errors: AdError[]` when wired; **stub today rejects** the promise                   |
+| `MultiFormatAdRequest.create`            | Synchronous **throw** on illegal config                                                       |
 
 Because hook errors are `AdError`, `error.reason` and `error.phase` are real values there, not `undefined`:
 
@@ -1389,7 +1460,7 @@ Note the deliberate splits. `empty`, `timeout`, and `stale-by-policy` are **not*
 
 ### 7. Response metadata and paid events
 
-After a successful load, read `responseInfo` on the ad / handle. On `PAID`, prefer `valueMicros` when present and walk the loaded adapter row for waterfall debugging. **No eCPM helpers in the public API.**
+After a successful load, read `responseInfo` on the ad / handle. On `PAID`, prefer `valueMicros` when present and walk the loaded adapter row for waterfall debugging. See [Metadata](#metadata-additive) (no eCPM helpers).
 
 ```ts
 import { AdEventType, InterstitialAd, TestIds } from 'react-native-google-mobile-ads';
@@ -1428,7 +1499,59 @@ ad.addAdEventListener(AdEventType.PAID, paid => {
 ad.load();
 ```
 
-Same `responseInfo` field exists on `NativeAd`, multi-format handles, and pooled ads once wired. `peekResponseInfo()` on a pool is a **non-reserving** snapshot (racy, do not treat it as a poll). It reports the head of the buffer only and carries no time information, so it is not an age check. Gate with `getAdCapabilities().poolResponseInfoPeek` first: classic Android has no peek API (`unavailable` → hard-error `'pool/peek-unsupported'`); classic iOS supports a head peek when wired. On a supported backend, resolved `null` means the head is empty — it must not be read as "peek unsupported".
+Same `responseInfo` field exists on `NativeAd`, multi-format handles, and pooled ads once wired. `peekResponseInfo()` on a pool is a **non-reserving** snapshot (racy, do not treat it as a poll). It reports the head of the buffer only and carries no time information, so it is not an age check. Gate with `getAdCapabilities().poolResponseInfoPeek` first: classic Android has no peek API (`unavailable` → hard-error `'pool/peek-unsupported'`); classic iOS supports a head peek when wired. On a supported backend, resolved `null` means the head is empty; it must not be read as "peek unsupported".
+
+---
+
+
+## Migration sketches
+
+Additive: existing names and call shapes stay. Two common moves when you opt in:
+
+**Classic interstitial → fullscreen pool (shape change at show time)**
+
+```ts
+// Before
+const ad = InterstitialAd.createForAdRequest(unit);
+ad.addAdEventListener(AdEventType.LOADED, () => ad.show());
+ad.load();
+
+// After (imperative sketch)
+const pool = await AdPools.create(AdPoolPresets.fullscreen(AdFormat.INTERSTITIAL, unit));
+const result = await pool.poll();
+if (result.status === 'filled' && result.ad.format === AdFormat.INTERSTITIAL) {
+  if (!result.ad.isStaleByPolicy()) await result.ad.show();
+  result.ad.destroy();
+}
+```
+
+**Classic banner/native → multi-format (one winner)**
+
+```ts
+// Before: pick one format yourself
+// After: one request, render the winner
+const { status, ads, load } = useMultiFormatAd(
+  unit,
+  MultiFormatAdPresets.nativeOrBanner([BannerAdSize.MEDIUM_RECTANGLE]),
+);
+// mount: void load(); then branch on ads[0].format
+```
+
+Full React provider flows: [Usage examples](#usage-examples).
+
+---
+
+## First failure modes
+
+| Symptom | Likely cause |
+| ------- | ------------ |
+| `useAdPool` / `usePooledAd` stuck on `absent` | `poolId` typo or missing `AdPoolProvider` entry for that id |
+| `usePooledAd` idle with empty buffer, create never runs | Provider missing or `pools` config omitted that id (pair with `useAdPool` / `poolStatus`) |
+| Two placements starve each other | Two `usePooledAd(sameId)` owners on a depth-1 pool |
+| `destroy()` then hook still looks filled | Destroyed hook-owned inventory; `release()` first |
+| Example 4 loads twice in development | React StrictMode double-invokes effects; `load()` coalesces per instance (still one in-flight) |
+| `MultiFormatAdRequest.load()` rejects today | Stub; hooks resolve empty/`no-fill` instead. See stub notes per section |
+| Exhaustive `switch` on `'timeout'` never hits | `pollTimeoutMillis` omitted (see [defaults](#config-defaults-and-adserver-asymmetry)) |
 
 ---
 
