@@ -64,6 +64,13 @@ export type UseAdPoolResult = UseAdPoolResultBase &
   );
 
 /**
+ * Status discriminant for `useAdPool`. Derived from `UseAdPoolResult` so the
+ * string union cannot drift from the result arms. Also the type of
+ * `usePooledAd(...).poolStatus`.
+ */
+export type UseAdPoolStatus = UseAdPoolResult['status'];
+
+/**
  * Read a pool created by AdPoolProvider or AdPools.create.
  * Stub: always `absent`, since no pool can be created yet.
  */

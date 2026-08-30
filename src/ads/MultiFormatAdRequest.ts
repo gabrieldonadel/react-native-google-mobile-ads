@@ -41,13 +41,9 @@ export class MultiFormatAdRequest {
 
   /**
    * Imperative load. The caller owns every returned handle: `destroy()` it, and
-   * check it before rendering, since a handle can go stale between load and
-   * render.
-   *
-   * NOTE (superseded): the check is pending replacement by a predicate over a
-   * staleness window the caller configures, per ratified expiry decision points
-   * 1, 2 and 7. See the canonical inventory expiry record published on the
-   * internal tracker as `inventory-expiry-canonical.md`.
+   * evaluate `isStaleByPolicy()` before rendering, since a handle can cross the
+   * configured window between load and render. The policy timer lives on the
+   * handle; subscribe with `onStaleByPolicy` while holding if needed.
    *
    * Errors carry the structured `AdErrorPayload` fields as well as being real
    * `Error` objects, the same `AdError` shape the hooks expose.

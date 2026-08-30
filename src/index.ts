@@ -67,9 +67,13 @@ export { useInterstitialAd } from './hooks/useInterstitialAd';
 export { useRewardedAd } from './hooks/useRewardedAd';
 export { useRewardedInterstitialAd } from './hooks/useRewardedInterstitialAd';
 export { useForeground } from './hooks/useForeground';
-export { AdPoolProvider } from './hooks/AdPoolProvider';
-export { useAdPool } from './hooks/useAdPool';
-export { usePooledAd } from './hooks/usePooledAd';
-export { useMultiFormatAd } from './hooks/useMultiFormatAd';
+export { AdPoolProvider, type AdPoolProviderProps } from './hooks/AdPoolProvider';
+export { useAdPool, type UseAdPoolResult, type UseAdPoolStatus } from './hooks/useAdPool';
+export { usePooledAd, type UsePooledAdResult, type UsePooledAdStatus } from './hooks/usePooledAd';
+export {
+  useMultiFormatAd,
+  type UseMultiFormatAdResult,
+  type UseMultiFormatAdStatus,
+} from './hooks/useMultiFormatAd';
 export { RevenuePrecisions } from './common/constants';
 export * from './types';

@@ -79,7 +79,7 @@ export function useFullScreenAd(
           dispatch({ isOpened: true });
           break;
         case AdEventType.PAID:
-          dispatch({ revenue: payload as unknown as PaidEvent });
+          dispatch({ revenue: payload as PaidEvent });
           break;
         case AdEventType.CLOSED:
           dispatch({ isClosed: true, isLoaded: false });

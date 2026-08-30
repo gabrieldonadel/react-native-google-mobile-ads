@@ -30,14 +30,8 @@ export type MultiFormatBannerAdViewProps = ViewProps & {
    * Typed as banner-only: non-banner handles are a compile-time error.
    *
    * The `AdFormat.BANNER` arm of `PooledAd` is structurally identical, so a
-   * polled banner can be passed here directly. Both arms carry `AdIdentity`
-   * and `AdExpiry`.
-   *
-   * NOTE (superseded): the pre-mount check is pending replacement by a predicate
-   * over a configured staleness window, per ratified expiry decision points 1
-   * and 2, and the two arms will differ by provenance (point 3). See the
-   * canonical inventory expiry record published on the internal tracker as
-   * `inventory-expiry-canonical.md`.
+   * polled banner can be passed here directly. Both arms carry `AdIdentity`,
+   * `AdExpiry`, and a provenance tag.
    */
   handle: MultiFormatBannerAdHandle;
 };

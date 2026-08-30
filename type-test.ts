@@ -30,6 +30,7 @@ import mobileAds, {
   AdFormat,
   AdPools,
   AdPoolPresets,
+  AdStalenessGuidanceMillis,
   MultiFormatAdPresets,
   MultiFormatAdRequest,
   MultiFormatBannerAdView,
@@ -47,10 +48,19 @@ import type {
   AdCapabilities,
   AdError,
   AdErrorPayload,
+  AdEventListener,
+  AdEventPayload,
+  KnownAdErrorReason,
   AdExpiry,
   AdIdentity,
+  AdPool,
+  AdPoolAvailability,
   AdPoolConfig,
   AdPoolEvent,
+  AdPoolPresetOverrides,
+  AdPoolProviderProps,
+  DisplayPoolId,
+  FullscreenPoolId,
   CapabilitySupport,
   LoadedAdapterResponseInfo,
   MultiFormatAdHandle,
@@ -63,6 +73,12 @@ import type {
   PollResult,
   PooledAd,
   ResponseInfo,
+  UseAdPoolResult,
+  UseAdPoolStatus,
+  UseMultiFormatAdResult as ExportedUseMultiFormatAdResult,
+  UseMultiFormatAdStatus,
+  UsePooledAdResult as ExportedUsePooledAdResult,
+  UsePooledAdStatus,
 } from './src';
 
 // static exports
@@ -205,13 +221,16 @@ console.log(appOpenAd.loaded);
 appOpenAd.load();
 appOpenAd.show().then();
 
-appOpenAd.addAdEventListener(AdEventType.PAID, () => {});
+appOpenAd.addAdEventListener(AdEventType.PAID, (paid: PaidEvent) => {
+  console.log(paid.currency, paid.value, paid.valueMicros, paid.responseInfo?.responseId);
+});
 appOpenAd.addAdEventsListener(({ type, payload }) => {
   if (payload) {
     console.log(type);
     console.log(payload instanceof Error && payload.message);
     console.log('amount' in payload && payload.amount);
     console.log('data' in payload && payload.data);
+    console.log('currency' in payload && payload.currency);
   }
 });
 appOpenAd.removeAllListeners();
@@ -227,13 +246,16 @@ console.log(interstitial.loaded);
 interstitial.load();
 interstitial.show().then();
 
-interstitial.addAdEventListener(AdEventType.PAID, () => {});
+interstitial.addAdEventListener(AdEventType.PAID, (paid: PaidEvent) => {
+  console.log(paid.currency, paid.valueMicros);
+});
 interstitial.addAdEventsListener(({ type, payload }) => {
   if (payload) {
     console.log(type);
     console.log(payload instanceof Error && payload.message);
     console.log('amount' in payload && payload.amount);
     console.log('data' in payload && payload.data);
+    console.log('currency' in payload && payload.currency);
   }
 });
 interstitial.removeAllListeners();
@@ -249,13 +271,16 @@ console.log(rewardedAd.loaded);
 rewardedAd.load();
 rewardedAd.show().then();
 
-rewardedAd.addAdEventListener(AdEventType.PAID, () => {});
+rewardedAd.addAdEventListener(AdEventType.PAID, (paid: PaidEvent) => {
+  console.log(paid.currency, paid.valueMicros);
+});
 rewardedAd.addAdEventsListener(({ type, payload }) => {
   if (payload) {
     console.log(type);
     console.log(payload instanceof Error && payload.message);
     console.log('amount' in payload && payload.amount);
     console.log('data' in payload && payload.data);
+    console.log('currency' in payload && payload.currency);
   }
 });
 rewardedAd.removeAllListeners();
@@ -271,13 +296,16 @@ console.log(rewardedInterstitialAd.loaded);
 rewardedInterstitialAd.load();
 rewardedInterstitialAd.show().then();
 
-rewardedInterstitialAd.addAdEventListener(AdEventType.PAID, () => {});
+rewardedInterstitialAd.addAdEventListener(AdEventType.PAID, (paid: PaidEvent) => {
+  console.log(paid.currency, paid.valueMicros);
+});
 rewardedInterstitialAd.addAdEventsListener(({ type, payload }) => {
   if (payload) {
     console.log(type);
     console.log(payload instanceof Error && payload.message);
     console.log('amount' in payload && payload.amount);
     console.log('data' in payload && payload.data);
+    console.log('currency' in payload && payload.currency);
   }
 });
 rewardedInterstitialAd.removeAllListeners();
@@ -299,13 +327,16 @@ console.log(gmaInterstitialAd.loaded);
 gmaInterstitialAd.load();
 gmaInterstitialAd.show().then();
 
-gmaInterstitialAd.addAdEventListener(AdEventType.PAID, () => {});
+gmaInterstitialAd.addAdEventListener(AdEventType.PAID, (paid: PaidEvent) => {
+  console.log(paid.currency, paid.valueMicros);
+});
 gmaInterstitialAd.addAdEventsListener(({ type, payload }) => {
   if (payload) {
     console.log(type);
     console.log(payload instanceof Error && payload.message);
     console.log('amount' in payload && payload.amount);
     console.log('data' in payload && payload.data);
+    console.log('currency' in payload && payload.currency);
   }
 });
 gmaInterstitialAd.removeAllListeners();
@@ -332,14 +363,15 @@ const support: CapabilitySupport = capabilities.fullscreenPreload;
 console.log(backend, support, capabilities.sdkVersion);
 console.log(AdFormat.NATIVE, AdFormat.BANNER, AdFormat.INTERSTITIAL);
 
-const fullscreenPoolConfig: AdPoolConfig = AdPoolPresets.fullscreen(
+const fullscreenPoolConfig = AdPoolPresets.fullscreen(
   AdFormat.INTERSTITIAL,
   TestIds.INTERSTITIAL,
 );
+const fullscreenPoolConfigAsAdPool: AdPoolConfig = fullscreenPoolConfig;
 const displayPoolConfig = AdPoolPresets.display(TestIds.GAM_NATIVE);
-console.log(fullscreenPoolConfig.poolId, displayPoolConfig.formats);
+console.log(fullscreenPoolConfigAsAdPool.poolId, displayPoolConfig.formats);
 
-// AdPoolPresets.fullscreen takes the same Partial<AdPoolConfig> bag as display,
+// AdPoolPresets.fullscreen takes the same AdPoolPresetOverrides bag as display,
 // so the one field that matters on a fullscreen pool is reachable.
 const bufferedFullscreenConfig: AdPoolConfig = AdPoolPresets.fullscreen(
   AdFormat.INTERSTITIAL,
@@ -347,6 +379,29 @@ const bufferedFullscreenConfig: AdPoolConfig = AdPoolPresets.fullscreen(
   { bufferSize: 2, requestOptions: { keywords: ['test'] } },
 );
 console.log(bufferedFullscreenConfig.bufferSize, bufferedFullscreenConfig.requestOptions?.keywords);
+
+// AX-6: poolId is a typed joint — prefer config.poolId over hand-retyping the template.
+const displayPoolIdFromPreset: DisplayPoolId<typeof TestIds.GAM_NATIVE> = displayPoolConfig.poolId;
+const fullscreenPoolIdFromPreset: FullscreenPoolId<
+  AdFormat.INTERSTITIAL,
+  typeof TestIds.INTERSTITIAL
+> = fullscreenPoolConfig.poolId;
+console.log(displayPoolIdFromPreset, fullscreenPoolIdFromPreset);
+
+// AX-6: override bag omits formats / adUnitId (compile-time undercut blocked).
+const displayOverrides: AdPoolPresetOverrides = {
+  bufferSize: 1,
+  poolId: 'custom-display-pool',
+  bannerSizes: [BannerAdSize.BANNER],
+};
+const customIdDisplay = AdPoolPresets.display(TestIds.GAM_NATIVE, displayOverrides);
+console.log(customIdDisplay.poolId, customIdDisplay.adUnitId);
+// @ts-expect-error formats is not an AdPoolPresetOverrides field
+const badDisplayFormats: AdPoolPresetOverrides = { formats: [AdFormat.INTERSTITIAL] };
+// @ts-expect-error adUnitId is not an AdPoolPresetOverrides field
+const badDisplayUnit: AdPoolPresetOverrides = { adUnitId: 'other-unit' };
+void badDisplayFormats;
+void badDisplayUnit;
 
 const multiFormatBannerSizes: MultiFormatBannerSize[] = [
   BannerAdSize.BANNER,
@@ -356,7 +411,6 @@ const multiFormatBannerSizes: MultiFormatBannerSize[] = [
   { width: 300, height: 200 },
 ];
 const multiFormatOptions: MultiFormatAdRequestOptions = MultiFormatAdPresets.nativeOrBanner(
-  TestIds.GAM_NATIVE,
   multiFormatBannerSizes,
 );
 const multiFormat = MultiFormatAdRequest.create(TestIds.GAM_NATIVE, multiFormatOptions);
@@ -396,15 +450,22 @@ if (
   pooledAd.removeAllListeners();
 }
 
-// PooledAd identity + expiry are present on every variant
-console.log(pooledAd.adId, pooledAd.loadedAt, pooledAd.expiresAt, pooledAd.isExpired());
-pooledAd.onExpired(() => undefined)();
+// PooledAd identity + publisher-policy staleness are present on every variant
+console.log(
+  pooledAd.adId,
+  pooledAd.observedAt,
+  pooledAd.provenance,
+  pooledAd.stalenessWindowMillis,
+  pooledAd.stalenessWindowSource,
+  pooledAd.isStaleByPolicy(),
+);
+pooledAd.onStaleByPolicy(() => undefined)();
 
 // PollResult narrows the filled case to a PooledAd
 declare const pollResult: PollResult;
 switch (pollResult.status) {
   case 'filled':
-    console.log(pollResult.ad.adId);
+    console.log(pollResult.ad.adId, pollResult.ad.isStaleByPolicy());
     break;
   case 'empty':
   case 'timeout':
@@ -415,13 +476,19 @@ switch (pollResult.status) {
     break;
 }
 
-// Pool expiry events carry ad identity
+// Pool churn events: library-managed eviction vs SDK-managed signals
 declare const poolEvent: AdPoolEvent;
 if (poolEvent.type === 'expired') {
-  console.log(poolEvent.poolId, poolEvent.adId, poolEvent.reason);
+  console.log(poolEvent.poolId, poolEvent.adId, poolEvent.reason, poolEvent.provenance);
 }
 if (poolEvent.type === 'refreshed') {
-  console.log(poolEvent.adId, poolEvent.replacedAdId);
+  console.log(poolEvent.adId, poolEvent.replacedAdId, poolEvent.provenance);
+}
+if (poolEvent.type === 'exhausted') {
+  console.log(poolEvent.poolId);
+}
+if (poolEvent.type === 'available') {
+  console.log(poolEvent.poolId, poolEvent.responseId);
 }
 
 // useAdPool status union narrows `pool` to non-null without assertions
@@ -430,33 +497,211 @@ const poolState = useAdPool('display-pool');
 poolState.retry();
 if (poolState.status === 'ready' || poolState.status === 'ready-degraded') {
   console.log(poolState.pool.poolId, poolState.pool.resolved.degradeReasons);
+  console.log(poolState.pool.resolved.effectiveStalenessWindowMillis);
 }
 if (poolState.status === 'error') {
   // The error arm carries the structured payload as well as being an Error
   console.log(poolState.error.message, poolState.error.reason, poolState.error.phase);
 }
 
-// usePooledAd is state-first: status/error/ad live on the hook
+// usePooledAd is state-first and discriminated on status
 const pooledState = usePooledAd('display-pool');
-console.log(pooledState.status, pooledState.available, pooledState.error?.reason);
+console.log(
+  pooledState.status,
+  pooledState.poolStatus,
+  pooledState.available,
+  pooledState.observedCount,
+);
 pooledState.poll().then(result => console.log(result.status));
 console.log(pooledState.release());
 
-// 'expired' is part of the usePooledAd status union and is not an error state
-const expiredPooledStatus: ReturnType<typeof usePooledAd>['status'] = 'expired';
-console.log(expiredPooledStatus);
+// Narrowing: filled carries a PooledAd; error/no-fill carry AdError; empty does not
+type UsePooledAdResult = ReturnType<typeof usePooledAd>;
+type PooledFilled = Extract<UsePooledAdResult, { status: 'filled' }>;
+type PooledError = Extract<UsePooledAdResult, { status: 'error' }>;
+type PooledNoFill = Extract<UsePooledAdResult, { status: 'no-fill' }>;
+type PooledEmpty = Extract<UsePooledAdResult, { status: 'empty' }>;
+type PooledStale = Extract<UsePooledAdResult, { status: 'stale-by-policy' }>;
+type PooledConsumed = Extract<UsePooledAdResult, { status: 'consumed' }>;
+declare const pooledFilled: PooledFilled;
+declare const pooledErrorArm: PooledError;
+declare const pooledNoFillArm: PooledNoFill;
+declare const pooledEmptyArm: PooledEmpty;
+declare const pooledStaleArm: PooledStale;
+declare const pooledConsumedArm: PooledConsumed;
+console.log(pooledFilled.ad.adId, pooledFilled.error);
+console.log(pooledErrorArm.error.reason, pooledErrorArm.ad);
+console.log(pooledNoFillArm.error.phase, pooledNoFillArm.ad);
+console.log(pooledEmptyArm.ad, pooledEmptyArm.error);
+console.log(pooledStaleArm.ad, pooledStaleArm.error);
+console.log(pooledConsumedArm.ad, pooledConsumedArm.error);
 
-// useMultiFormatAd: ownership, no-fill vs error, expired, release
+if (pooledState.status === 'filled') {
+  console.log(pooledState.ad.adId, pooledState.error);
+}
+if (pooledState.status === 'error' || pooledState.status === 'no-fill') {
+  console.log(pooledState.error.reason, pooledState.error.phase, pooledState.ad);
+}
+if (pooledState.status === 'idle' || pooledState.status === 'empty' || pooledState.status === 'timeout') {
+  console.log(pooledState.ad, pooledState.error);
+}
+if (pooledState.status === 'consumed') {
+  console.log(pooledState.ad, pooledState.error);
+}
+
+// 'stale-by-policy' and 'consumed' are part of the usePooledAd status union and
+// are not error states
+const stalePooledStatus: UsePooledAdResult['status'] = 'stale-by-policy';
+const consumedPooledStatus: UsePooledAdResult['status'] = 'consumed';
+console.log(stalePooledStatus, consumedPooledStatus);
+
+// Impossible arms must not type-check (assignability via Extract)
+type PooledFilledAdIsPooledAd = PooledFilled['ad'] extends PooledAd
+  ? PooledAd extends PooledFilled['ad']
+    ? true
+    : false
+  : false;
+type PooledErrorIsAdError = PooledError['error'] extends AdError
+  ? AdError extends PooledError['error']
+    ? true
+    : false
+  : false;
+const pooledFilledAdOk: PooledFilledAdIsPooledAd = true;
+const pooledErrorOk: PooledErrorIsAdError = true;
+console.log(pooledFilledAdOk, pooledErrorOk);
+
+// useMultiFormatAd: ownership, no-fill vs error, stale-by-policy, release
 const multiFormatState = useMultiFormatAd(TestIds.GAM_NATIVE, multiFormatOptions);
 console.log(multiFormatState.status, multiFormatState.ads.length);
-console.log(multiFormatState.errors.map(e => `${e.reason}/${e.phase}: ${e.message}`));
 const releasedHandles: MultiFormatAdHandle[] = multiFormatState.release();
 console.log(releasedHandles.length);
 multiFormatState.load().then(result => console.log(result.status));
 
-const multiFormatNoFillStatus: ReturnType<typeof useMultiFormatAd>['status'] = 'no-fill';
-const multiFormatExpiredStatus: ReturnType<typeof useMultiFormatAd>['status'] = 'expired';
-console.log(multiFormatNoFillStatus, multiFormatExpiredStatus);
+type UseMultiFormatAdResult = ReturnType<typeof useMultiFormatAd>;
+type MultiFormatLoaded = Extract<UseMultiFormatAdResult, { status: 'loaded' }>;
+type MultiFormatPartial = Extract<UseMultiFormatAdResult, { status: 'loaded-partial' }>;
+type MultiFormatHookNoFill = Extract<UseMultiFormatAdResult, { status: 'no-fill' }>;
+type MultiFormatHookError = Extract<UseMultiFormatAdResult, { status: 'error' }>;
+type MultiFormatHookStale = Extract<UseMultiFormatAdResult, { status: 'stale-by-policy' }>;
+declare const multiFormatLoaded: MultiFormatLoaded;
+declare const multiFormatPartial: MultiFormatPartial;
+declare const multiFormatHookNoFill: MultiFormatHookNoFill;
+declare const multiFormatHookError: MultiFormatHookError;
+declare const multiFormatHookStale: MultiFormatHookStale;
+console.log(multiFormatLoaded.ads.length, multiFormatLoaded.errors.length);
+console.log(multiFormatPartial.ads.length, multiFormatPartial.errors.map(e => e.reason));
+console.log(multiFormatHookNoFill.ads.length, multiFormatHookNoFill.errors.length);
+console.log(multiFormatHookError.errors.map(e => e.phase), multiFormatHookError.ads.length);
+console.log(multiFormatHookStale.ads.length, multiFormatHookStale.errors.map(e => e.reason));
+
+if (multiFormatState.status === 'loaded') {
+  console.log(multiFormatState.ads[0]?.format, multiFormatState.errors.length);
+}
+if (multiFormatState.status === 'loaded-partial') {
+  console.log(multiFormatState.ads[0]?.format, multiFormatState.errors.map(e => e.reason));
+}
+if (multiFormatState.status === 'error') {
+  console.log(multiFormatState.errors.map(e => `${e.reason}/${e.phase}: ${e.message}`));
+}
+if (multiFormatState.status === 'no-fill' || multiFormatState.status === 'idle') {
+  console.log(multiFormatState.ads.length, multiFormatState.errors.length);
+}
+
+const multiFormatNoFillStatus: UseMultiFormatAdResult['status'] = 'no-fill';
+const multiFormatStaleStatus: UseMultiFormatAdResult['status'] = 'stale-by-policy';
+const multiFormatLoadingStatus: UseMultiFormatAdResult['status'] = 'loading';
+const pooledPollingStatus: UsePooledAdResult['status'] = 'polling';
+const pooledFilledStatus: UsePooledAdResult['status'] = 'filled';
+console.log(
+  multiFormatNoFillStatus,
+  multiFormatStaleStatus,
+  multiFormatLoadingStatus,
+  pooledPollingStatus,
+  pooledFilledStatus,
+);
+
+// AX-1: Use*AdStatus is derived from Use*AdResult['status'] — equality must hold.
+// Poll-only words must not appear on multi-format; load-only words must not appear on pooled.
+// (Avoid leading-underscore type alias names: noUnusedLocals + TS2552 interact badly.)
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+  ? true
+  : false;
+type AssertNever<T extends never> = T;
+
+const pooledStatusEqualsResult: Equal<UsePooledAdStatus, UsePooledAdResult['status']> = true;
+const pooledStatusEqualsExport: Equal<UsePooledAdStatus, ExportedUsePooledAdResult['status']> =
+  true;
+const multiStatusEqualsResult: Equal<UseMultiFormatAdStatus, UseMultiFormatAdResult['status']> =
+  true;
+const multiStatusEqualsExport: Equal<
+  UseMultiFormatAdStatus,
+  ExportedUseMultiFormatAdResult['status']
+> = true;
+// AX-3: hook result / status / provider props come from the public barrel.
+const useAdPoolResultEqualsReturn: Equal<UseAdPoolResult, ReturnType<typeof useAdPool>> = true;
+// AX-7: UseAdPoolStatus derived + exported; poolStatus shares it; count required.
+const useAdPoolStatusEqualsResult: Equal<UseAdPoolStatus, UseAdPoolResult['status']> = true;
+type PooledPoolStatusEquals = Equal<UsePooledAdResult['poolStatus'], UseAdPoolStatus>;
+type ObservedCountIsNumber = UsePooledAdResult['observedCount'] extends number
+  ? number extends UsePooledAdResult['observedCount']
+    ? true
+    : false
+  : false;
+type AdPoolAvailabilityCountRequired = Equal<
+  AdPoolAvailability,
+  { available: boolean; observedCount: number }
+>;
+const ax7AvailabilityLocks: [
+  PooledPoolStatusEquals,
+  ObservedCountIsNumber,
+  AdPoolAvailabilityCountRequired,
+] = [true, true, true];
+declare const adPoolProviderProps: AdPoolProviderProps;
+console.log(
+  pooledStatusEqualsResult,
+  pooledStatusEqualsExport,
+  multiStatusEqualsResult,
+  multiStatusEqualsExport,
+  useAdPoolResultEqualsReturn,
+  useAdPoolStatusEqualsResult,
+  ax7AvailabilityLocks,
+  adPoolProviderProps.pools.length,
+);
+
+type PollOnlyStatus = 'polling' | 'filled' | 'empty' | 'timeout';
+type LoadOnlyStatus = 'loading' | 'loaded' | 'loaded-partial';
+type HookOnlyPooledStatus = 'consumed';
+type PollWordsNotInMulti = AssertNever<Extract<UseMultiFormatAdStatus, PollOnlyStatus>>;
+type LoadWordsNotInPooled = AssertNever<Extract<UsePooledAdStatus, LoadOnlyStatus>>;
+type ConsumedNotInMulti = AssertNever<Extract<UseMultiFormatAdStatus, HookOnlyPooledStatus>>;
+type SharedIdleOnBoth = Extract<UsePooledAdStatus & UseMultiFormatAdStatus, 'idle'>;
+const sharedIdleOk: SharedIdleOnBoth = 'idle';
+const ax1VocabLocks: [PollWordsNotInMulti, LoadWordsNotInPooled, ConsumedNotInMulti] = [
+  undefined as never,
+  undefined as never,
+  undefined as never,
+];
+console.log(sharedIdleOk, ax1VocabLocks);
+
+// AX-6: preset poolId equals the DisplayPoolId / FullscreenPoolId templates.
+const displayPoolIdEqualsTemplate: Equal<
+  typeof displayPoolConfig.poolId,
+  DisplayPoolId<typeof TestIds.GAM_NATIVE>
+> = true;
+const fullscreenPoolIdEqualsTemplate: Equal<
+  typeof fullscreenPoolConfig.poolId,
+  FullscreenPoolId<AdFormat.INTERSTITIAL, typeof TestIds.INTERSTITIAL>
+> = true;
+console.log(displayPoolIdEqualsTemplate, fullscreenPoolIdEqualsTemplate);
+
+// AX-4: consumed arm clears inventory when await show() fulfills (not
+// OPENED/CLOSED/EARNED_REWARD); ad-already-used stays a show-phase reason;
+// release() leaves status idle among current arms.
+type ConsumedAdIsNull = PooledConsumed['ad'] extends null ? true : false;
+type ConsumedErrorIsNull = PooledConsumed['error'] extends null ? true : false;
+const consumedArmOk: [ConsumedAdIsNull, ConsumedErrorIsNull] = [true, true];
+const alreadyUsedReason: KnownAdErrorReason = 'ad-already-used';
+console.log(consumedArmOk, alreadyUsedReason);
 
 // The load result narrows on status, and 'no-fill' is distinct from 'error'
 declare const multiFormatLoadResult: MultiFormatLoadResult;
@@ -486,21 +731,43 @@ console.log(
   multiFormatError.errors.map(e => e.reason),
 );
 
-// Multi-format handles carry the same identity + expiry surface pooled ads do
+// Multi-format handles carry the same identity + policy surface pooled ads do
 declare const multiFormatHandle: MultiFormatAdHandle;
-console.log(multiFormatHandle.adId, multiFormatHandle.loadedAt, multiFormatHandle.expiresAt);
-console.log(multiFormatHandle.isExpired());
-multiFormatHandle.onExpired(() => undefined)();
+console.log(
+  multiFormatHandle.adId,
+  multiFormatHandle.observedAt,
+  multiFormatHandle.provenance,
+  multiFormatHandle.stalenessWindowMillis,
+  multiFormatHandle.stalenessWindowSource,
+);
+console.log(multiFormatHandle.isStaleByPolicy());
+multiFormatHandle.onStaleByPolicy(() => undefined)();
 const handleExpiry: AdExpiry = multiFormatHandle;
 const handleIdentity: AdIdentity = multiFormatHandle;
 const pooledExpiry: AdExpiry = pooledAd;
 const pooledIdentity: AdIdentity = pooledAd;
 console.log(
-  handleExpiry.expiresAt,
+  handleExpiry.stalenessWindowMillis,
   handleIdentity.adId,
-  pooledExpiry.expiresAt,
+  handleIdentity.observedAt,
+  pooledExpiry.stalenessWindowSource,
   pooledIdentity.adId,
 );
+
+// Capability: maxManagedPoolAds is null; per-format preload + peek gates exist
+const caps: AdCapabilities = getAdCapabilities();
+console.log(caps.maxManagedPoolAds, caps.fullscreenPreloadFormats[AdFormat.REWARDED_INTERSTITIAL]);
+console.log(caps.poolResponseInfoPeek);
+const peekUnsupportedReason: KnownAdErrorReason = 'pool/peek-unsupported';
+const formatPreloadUnsupportedReason: KnownAdErrorReason = 'pool/format-preload-unsupported';
+console.log(peekUnsupportedReason, formatPreloadUnsupportedReason);
+// B5-R1: peek gate is a real AdCapabilities key (G52 pattern), not a JSDoc claim.
+type AdCapabilitiesHasPeekGate = Equal<
+  AdCapabilities['poolResponseInfoPeek'],
+  CapabilitySupport
+>;
+const adCapabilitiesPeekGate: AdCapabilitiesHasPeekGate = true;
+console.log(adCapabilitiesPeekGate);
 
 // A polled banner ad is structurally a MultiFormatBannerAdView handle
 declare const pooledBannerAd: Extract<PooledAd, { format: AdFormat.BANNER }>;
@@ -527,6 +794,10 @@ const paid: PaidEvent = {
   value: 0.01,
   valueMicros: '10000',
 };
+// AdEventPayload maps PAID → PaidEvent (not undefined)
+const paidPayload: AdEventPayload<AdEventType.PAID> = paid;
+const paidPayloadIsPaid: PaidEvent = paidPayload;
+console.log(paidPayloadIsPaid.valueMicros);
 const responseInfo: ResponseInfo = {
   responseId: null,
   adapterClassName: null,
@@ -558,3 +829,116 @@ const loadedRow: LoadedAdapterResponseInfo = {
   adError: null,
 };
 console.log(loadedRow.adError, loadedRow.latencyMillis);
+
+// =============================================================================
+// AX-10 / IDM-A14 — lock F1 contract claims that regress silently
+// (empty PAID handlers, ReturnType-only status probes, missing JSX coverage)
+// =============================================================================
+
+// PAID payload is exactly PaidEvent. Assignability alone is not enough: an empty
+// listener stays assignable if the payload regresses to `undefined`.
+type PaidPayloadIsPaidEvent = Equal<AdEventPayload<AdEventType.PAID>, PaidEvent>;
+const paidPayloadExact: PaidPayloadIsPaidEvent = true;
+const paidListener: AdEventListener<AdEventType.PAID> = (payload: PaidEvent) => {
+  console.log(payload.currency, payload.valueMicros);
+};
+console.log(paidPayloadExact, paidListener);
+
+// ERROR payload keeps structured AdErrorPayload fields on a real Error.
+type ErrorPayloadIsStructured = Equal<AdEventPayload<AdEventType.ERROR>, Error & AdErrorPayload>;
+const errorPayloadExact: ErrorPayloadIsStructured = true;
+declare const errorFromEvent: AdEventPayload<AdEventType.ERROR>;
+const errorReason: AdErrorPayload['reason'] = errorFromEvent.reason;
+const errorPhase: AdErrorPayload['phase'] = errorFromEvent.phase;
+console.log(errorPayloadExact, errorReason, errorPhase, errorFromEvent.message);
+
+// Banner onAdFailedToLoad exposes the same structured fields (partial).
+type BannerFailedLoadError = Parameters<
+  NonNullable<import('./src').BannerAdProps['onAdFailedToLoad']>
+>[0];
+type BannerFailedLoadHasReason = BannerFailedLoadError extends {
+  reason?: AdErrorPayload['reason'];
+}
+  ? true
+  : false;
+type BannerFailedLoadHasPhase = BannerFailedLoadError extends {
+  phase?: AdErrorPayload['phase'];
+}
+  ? true
+  : false;
+const bannerFailedLoadLocks: [BannerFailedLoadHasReason, BannerFailedLoadHasPhase] = [true, true];
+console.log(bannerFailedLoadLocks);
+
+// Expiry policy + identity members stay present on the shared surfaces.
+type AdExpiryKeys = Equal<
+  keyof AdExpiry,
+  'stalenessWindowMillis' | 'stalenessWindowSource' | 'isStaleByPolicy' | 'onStaleByPolicy'
+>;
+type AdIdentityKeys = Equal<keyof AdIdentity, 'adId' | 'observedAt'>;
+const expiryIdentityLocks: [AdExpiryKeys, AdIdentityKeys] = [true, true];
+// Exact millis are asserted at runtime in __tests__/ax10TypeContractLocks.test.tsx —
+// barrel re-exports widen the `as const` literals to number for typeof probes.
+type GuidanceKeys = Equal<keyof typeof AdStalenessGuidanceMillis, 'APP_OPEN' | 'OTHER'>;
+const guidanceKeysLock: GuidanceKeys = true;
+const guidanceAppOpenMs: number = AdStalenessGuidanceMillis.APP_OPEN;
+const guidanceOtherMs: number = AdStalenessGuidanceMillis.OTHER;
+console.log(expiryIdentityLocks, guidanceKeysLock, guidanceAppOpenMs, guidanceOtherMs);
+
+// nativeOrBanner keeps the documented requestCount / adServer literals.
+type NativeOrBannerOptions = ReturnType<typeof MultiFormatAdPresets.nativeOrBanner>;
+type NativeOrBannerRequestCount = Equal<NonNullable<NativeOrBannerOptions['requestCount']>, 1>;
+type NativeOrBannerAdServer = Equal<NonNullable<NativeOrBannerOptions['adServer']>, 'ad-manager'>;
+const nativeOrBannerLocks: [NativeOrBannerRequestCount, NativeOrBannerAdServer] = [true, true];
+const nativeOrBannerRuntime = MultiFormatAdPresets.nativeOrBanner([]);
+console.log(
+  nativeOrBannerLocks,
+  nativeOrBannerRuntime.requestCount,
+  nativeOrBannerRuntime.adServer,
+  nativeOrBannerRuntime.formats,
+);
+
+// AdPool instance surface: availability count + the imperative methods docs rely on.
+type AdPoolKeys = Equal<
+  keyof AdPool,
+  | 'poolId'
+  | 'formats'
+  | 'resolved'
+  | 'getAvailability'
+  | 'peekResponseInfo'
+  | 'poll'
+  | 'addListener'
+  | 'destroy'
+>;
+const adPoolKeyLock: AdPoolKeys = true;
+declare const adPoolInstance: AdPool;
+adPoolInstance.getAvailability().then(availability => {
+  const count: number = availability.observedCount;
+  const ready: boolean = availability.available;
+  console.log(adPoolKeyLock, count, ready);
+});
+adPoolInstance.peekResponseInfo().then(
+  info => {
+    // Supported path only: null means empty head, not unsupported.
+    const emptyOrInfo: ResponseInfo | null = info;
+    console.log(emptyOrInfo);
+  },
+  (err: AdError) => {
+    // Unsupported backends reject with 'pool/peek-unsupported' (not null).
+    console.log(err.reason === peekUnsupportedReason);
+  },
+);
+adPoolInstance.poll().then(result => console.log(result.status));
+adPoolInstance.addListener(event => console.log(event.type))();
+adPoolInstance.destroy();
+
+// Named status aliases stay the public source of truth (not ReturnType-only probes).
+type PooledStatusAlias = Equal<UsePooledAdStatus, UsePooledAdResult['status']>;
+type MultiStatusAlias = Equal<UseMultiFormatAdStatus, UseMultiFormatAdResult['status']>;
+type AdPoolStatusAlias = Equal<UseAdPoolStatus, UseAdPoolResult['status']>;
+const namedStatusAliasLocks: [PooledStatusAlias, MultiStatusAlias, AdPoolStatusAlias] = [
+  true,
+  true,
+  true,
+];
+const consumedStatusLiteral: UsePooledAdStatus = 'consumed';
+console.log(namedStatusAliasLocks, consumedStatusLiteral);

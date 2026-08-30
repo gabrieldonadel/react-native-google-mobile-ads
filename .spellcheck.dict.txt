@@ -100,7 +100,9 @@ pre-rendered
 preflight
 preloaded
 preloader
+preloader's
 programmatically
+provenance
 PRs
 PubSub
 qa
@@ -117,8 +119,10 @@ RNFirebase
 Salakar
 scalable
 scrollable
+showable
 SDK
 SDK.
+SDK-managed
 SDKs
 SDKs.
 SHA1
@@ -126,6 +130,7 @@ SHA-256
 SIGABRT
 SMS
 src
+staleness
 SVG
 TestLab
 TFUA
@@ -136,6 +141,9 @@ TypeDoc
 UI
 uncomment
 unhandled
+unrendered
+Unrendered
+unshown
 unsubscriber
 utils
 Utils
@@ -167,3 +175,11 @@ GAM
 unmount
 eCPM
 Zero-config
+getNumAdsAvailable
+numberOfAdsAvailableWithPreloadID
+observedCount
+poolStatus
+onAdsExhausted
+adsExhausted
+V2
+TTL

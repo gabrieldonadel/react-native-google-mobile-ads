@@ -15,58 +15,131 @@
  *
  */
 
-import type { AdPoolConfig } from '../types/AdPool';
+import type {
+  AdPoolConfig,
+  AdPoolPresetOverrides,
+  DisplayPoolId,
+  FullscreenPoolId,
+} from '../types/AdPool';
 import type { FullscreenAdFormat } from '../types/FullscreenAdFormat';
 import { AdFormat } from '../types/AdFormat';
+
+type DisplayPresetConfig<TAdUnitId extends string> = Omit<
+  AdPoolConfig,
+  'poolId' | 'formats' | 'adUnitId'
+> & {
+  poolId: DisplayPoolId<TAdUnitId>;
+  formats: [AdFormat.NATIVE, AdFormat.BANNER];
+  adUnitId: TAdUnitId;
+};
+
+type FullscreenPresetConfig<TFormat extends FullscreenAdFormat, TAdUnitId extends string> = Omit<
+  AdPoolConfig,
+  'poolId' | 'formats' | 'adUnitId'
+> & {
+  poolId: FullscreenPoolId<TFormat, TAdUnitId>;
+  formats: [TFormat];
+  adUnitId: TAdUnitId;
+};
+
+type DisplayPresetConfigCustomId<TAdUnitId extends string> = Omit<
+  AdPoolConfig,
+  'formats' | 'adUnitId'
+> & {
+  formats: [AdFormat.NATIVE, AdFormat.BANNER];
+  adUnitId: TAdUnitId;
+};
+
+type FullscreenPresetConfigCustomId<
+  TFormat extends FullscreenAdFormat,
+  TAdUnitId extends string,
+> = Omit<AdPoolConfig, 'formats' | 'adUnitId'> & {
+  formats: [TFormat];
+  adUnitId: TAdUnitId;
+};
+
+/**
+ * Fullscreen buffer sized for this backend.
+ *
+ * Rewarded interstitial is accepted in the type for cross-platform presets,
+ * but `AdPools.create` hard-errors on Android classic when
+ * `fullscreenPreloadFormats[REWARDED_INTERSTITIAL]` is `unavailable` (reason
+ * `'pool/format-preload-unsupported'`). Check that capability before create,
+ * or catch the error.
+ *
+ * Default `bufferSize: 1`. Google recommends 2 per preload ID; pass
+ * `{ bufferSize: 2 }` to ask for that depth. The app-wide cap that depth
+ * competes for is server-delivered (`maxManagedPoolAds` reports `null`).
+ * Depth 1 stays the default so create succeeds under a tight app-wide cap;
+ * publishers that want Google's recommended depth opt in explicitly.
+ *
+ * Takes the same `AdPoolPresetOverrides` bag as `display`, including
+ * `stalenessWindowMillis`. Pass request options as `{ requestOptions }`.
+ * `formats` and `adUnitId` are not overridable: those come from the
+ * positional parameters.
+ */
+function fullscreen<TFormat extends FullscreenAdFormat, TAdUnitId extends string>(
+  format: TFormat,
+  adUnitId: TAdUnitId,
+  options: AdPoolPresetOverrides & { poolId: string },
+): FullscreenPresetConfigCustomId<TFormat, TAdUnitId>;
+function fullscreen<TFormat extends FullscreenAdFormat, TAdUnitId extends string>(
+  format: TFormat,
+  adUnitId: TAdUnitId,
+  options?: AdPoolPresetOverrides,
+): FullscreenPresetConfig<TFormat, TAdUnitId>;
+function fullscreen<TFormat extends FullscreenAdFormat, TAdUnitId extends string>(
+  format: TFormat,
+  adUnitId: TAdUnitId,
+  options?: AdPoolPresetOverrides,
+): AdPoolConfig {
+  return {
+    poolId: `fullscreen-${format}-${adUnitId}`,
+    formats: [format],
+    adUnitId,
+    bufferSize: 1,
+    ...options,
+  };
+}
+
+/**
+ * Display pool (native + banner). Resolves to an emulated depth-1 pool
+ * where no SDK preloader exists (`'pool/emulated-no-sdk-preloader'`).
+ *
+ * `formats` and `adUnitId` are fixed by this preset; override buffer, request
+ * options, banner sizes, or `poolId` via `AdPoolPresetOverrides`.
+ */
+function display<TAdUnitId extends string>(
+  adUnitId: TAdUnitId,
+  options: AdPoolPresetOverrides & { poolId: string },
+): DisplayPresetConfigCustomId<TAdUnitId>;
+function display<TAdUnitId extends string>(
+  adUnitId: TAdUnitId,
+  options?: AdPoolPresetOverrides,
+): DisplayPresetConfig<TAdUnitId>;
+function display<TAdUnitId extends string>(
+  adUnitId: TAdUnitId,
+  options?: AdPoolPresetOverrides,
+): AdPoolConfig {
+  return {
+    poolId: `display-${adUnitId}`,
+    formats: [AdFormat.NATIVE, AdFormat.BANNER],
+    adUnitId,
+    bufferSize: 1,
+    ...options,
+  };
+}
 
 /**
  * Backend-aware pool config presets. Return plain AdPoolConfig objects;
  * AdPools.create validates them the same as hand-written config.
+ *
+ * Default `poolId` values are template literals (`display-${unit}`,
+ * `fullscreen-${format}-${unit}`). Pass that same `poolId` (or the config
+ * object) into `useAdPool` / `usePooledAd` so provider and consumer share one
+ * typed id rather than hand-retyping the template.
  */
 export const AdPoolPresets = {
-  /**
-   * Fullscreen buffer sized for this backend. Safe on every backend.
-   *
-   * NOTE (superseded): ratified expiry decision point 9. `FullscreenAdFormat`
-   * includes rewarded interstitial, which Android classic's preload registry
-   * rejects while iOS accepts it, so this preset is pending a capability gate
-   * and a hard error at pool creation on Android. Point 10 also applies to the
-   * app-wide cap this preset's depth competes for: the effective cap is
-   * server-delivered and is reported as `null`. See the canonical inventory
-   * expiry record published on the internal tracker as
-   * `inventory-expiry-canonical.md`.
-   *
-   * Takes the same `Partial<AdPoolConfig>` override bag as `display`, because
-   * fullscreen is the one family where `bufferSize` above 1 is meaningful:
-   * `AdPoolPresets.fullscreen(format, unit, { bufferSize: 2 })` is the intended
-   * way to ask for the depth Google recommends per preload ID. Pass request
-   * options as `{ requestOptions }`.
-   */
-  fullscreen(
-    format: FullscreenAdFormat,
-    adUnitId: string,
-    options?: Partial<AdPoolConfig>,
-  ): AdPoolConfig {
-    return {
-      poolId: `fullscreen-${format}-${adUnitId}`,
-      formats: [format],
-      adUnitId,
-      bufferSize: 1,
-      ...options,
-    };
-  },
-
-  /**
-   * Display pool (native + banner). Resolves to an emulated depth-1 pool
-   * where no SDK preloader exists.
-   */
-  display(adUnitId: string, options?: Partial<AdPoolConfig>): AdPoolConfig {
-    return {
-      poolId: `display-${adUnitId}`,
-      formats: [AdFormat.NATIVE, AdFormat.BANNER],
-      adUnitId,
-      bufferSize: 1,
-      ...options,
-    };
-  },
+  fullscreen,
+  display,
 } as const;

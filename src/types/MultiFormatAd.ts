@@ -1,6 +1,23 @@
+/*
+ * Copyright (c) 2016-present Invertase Limited & Contributors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this library except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ */
+
 import type { NativeAd } from '../ads/native-ad/NativeAd';
 import type { AdError } from './AdError';
-import type { AdExpiry, AdIdentity } from './AdExpiry';
+import type { AdExpiry, AdIdentity, AdInventoryProvenance } from './AdExpiry';
 import type { AdFormat } from './AdFormat';
 import type { MultiFormatBannerSize } from './MultiFormatBannerSize';
 import type { RequestOptions } from './RequestOptions';
@@ -13,31 +30,44 @@ export type MultiFormatAdRequestOptions = RequestOptions & {
   bannerSizes?: MultiFormatBannerSize[];
   requestCount?: 1;
   adServer?: 'ad-manager';
+  /**
+   * Publisher staleness window in milliseconds. When omitted, the request
+   * applies the one-hour guidance default for display formats and records that
+   * source on each handle. Not the SDK's cache timeout.
+   */
+  stalenessWindowMillis?: number;
 };
 
 /**
  * Members every multi-format handle carries.
  *
- * Identity and expiry are the same shapes pooled ads use. A multi-format
- * handle is loaded now and rendered later, which is precisely the window in
- * which inventory goes stale, so the holder gets the same surface.
- *
- * NOTE (superseded): the `AdExpiry` members are superseded by ratified expiry
- * decision points 1, 2 and 4 and are pending replacement by a staleness window
- * the publisher configures, plus a provenance tag (point 3). A multi-format
- * handle is always a load this library performed, which is the provenance where
- * the library's own observed time is the whole truth available to any client.
- * See the canonical inventory expiry record published on the internal tracker
- * as `inventory-expiry-canonical.md`.
+ * Identity and the publisher-policy staleness surface are the same shapes
+ * pooled ads use. A multi-format handle is always a library-performed load
+ * (`provenance: 'pool/emulated-no-sdk-preloader'`): the library's own observed
+ * load completion is the whole truth available to any client, and the observed
+ * time starts at hand-off.
  */
 type MultiFormatAdHandleBase = AdIdentity &
   AdExpiry & {
+    /**
+     * Always `'pool/emulated-no-sdk-preloader'`: this library performed the load.
+     */
+    provenance: Extract<AdInventoryProvenance, 'pool/emulated-no-sdk-preloader'>;
     responseInfo: ResponseInfo | null;
     /**
      * Releases the handle's native resources; idempotent.
      *
      * On the native arm this also destroys the inner `ad`. Do not call
      * `ad.destroy()` separately: the handle owns it.
+     *
+     * When `useMultiFormatAd` still owns this handle, do not call `destroy()`
+     * on it. Call `release()` first, or leave destruction to the hook.
+     * Destroying hook-owned inventory leaves the hook able to report `loaded`
+     * / `loaded-partial` with a dead handle.
+     *
+     * Also releases `onStaleByPolicy` listeners; a later unsubscribe is a no-op.
+     * The staleness timer lives on this handle and keeps running after
+     * `release()`.
      */
     destroy(): void;
   };
@@ -59,15 +89,10 @@ export type MultiFormatAdHandle =
  * The status values are the terminal subset of `UseMultiFormatAdStatus`, so a
  * hook consumer and a caller awaiting `load()` branch on the same words.
  *
- * A load never resolves `expired`. This library performed the load and returns
- * the handles straight out of its own completion callback, so the observed time
- * starts at hand-off.
- *
- * NOTE (superseded): the justification changes. This must no longer cite the
- * `PollResult` `filled` guarantee, which is withdrawn under ratified expiry
- * decision point 5; the reason the two differ is provenance. See the canonical
- * inventory expiry record published on the internal tracker as
- * `inventory-expiry-canonical.md`.
+ * A load never resolves `stale-by-policy`. This library performed the load and
+ * returns the handles straight out of its own completion callback, so the
+ * observed time starts at hand-off. That is a provenance fact, not a guarantee
+ * inherited from `PollResult`.
  */
 export type MultiFormatLoadResult =
   /** At least one handle, no errors. */

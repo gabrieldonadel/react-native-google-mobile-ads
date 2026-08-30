@@ -16,6 +16,39 @@
  */
 
 /**
+ * Google's published guidance figures used as **publisher policy defaults**,
+ * not as the SDK's cache timeout. The real preload TTL is server-delivered and
+ * unreadable; these millis are only the defaults applied when the publisher
+ * does not configure a window. See the canonical inventory expiry record
+ * published on the internal tracker as `inventory-expiry-canonical.md`.
+ */
+export const AdStalenessGuidanceMillis = {
+  /** App open guides: four hours. */
+  APP_OPEN: 4 * 60 * 60 * 1000,
+  /** Other formats: one hour tip. The Android interstitial figure is contested. */
+  OTHER: 60 * 60 * 1000,
+} as const;
+
+/**
+ * Where the applied staleness window on a handed-out object came from.
+ *
+ * Readable so a log line can explain a stale verdict without guessing which
+ * number was applied (app open defaults differ from other formats by 4×).
+ */
+export type AdStalenessWindowSource = 'configured' | 'guidance/app-open' | 'guidance/other';
+
+/**
+ * Who performed the load for this handed-out object.
+ *
+ * Reuses the existing `'pool/emulated-no-sdk-preloader'` vocabulary for every
+ * library-performed load (emulated pools, multi-format handles, one-shot loads
+ * that land on this surface) rather than inventing a parallel tag. SDK-managed
+ * polls use `'pool/sdk-managed-preloader'`. Knowability differs by provenance;
+ * see the canonical inventory expiry record.
+ */
+export type AdInventoryProvenance = 'pool/emulated-no-sdk-preloader' | 'pool/sdk-managed-preloader';
+
+/**
  * Identity carried by every piece of inventory the library hands to a
  * consumer, for correlation and diagnostics.
  *
@@ -26,60 +59,65 @@ export type AdIdentity = {
   /** Stable id, unique within the app for this ad's lifetime. */
   adId: string;
   /**
-   * Epoch millis when the library obtained this fill.
+   * Wall-clock epoch millis of the library's own observation of this ad, or
+   * `null` when the library never saw it arrive.
    *
-   * NOTE (superseded): ratified expiry decision point 4. Pending a rename that
-   * says what this measures, nullability, and per-provenance documentation.
-   * What the library can observe is its own load completion, or its own first
-   * sight of an ad becoming available; neither is the SDK's cache age. See the
-   * canonical inventory expiry record published on the internal tracker as
-   * `inventory-expiry-canonical.md`.
+   * Per provenance:
+   * - `'pool/emulated-no-sdk-preloader'`: load completion observed by this
+   *   library. There is no hidden platform cache age underneath.
+   * - `'pool/sdk-managed-preloader'`: ad availability observed by this library
+   *   (correlated from the preload availability callback). Not the platform's
+   *   own cache age, and `null` when the library was not listening when the ad
+   *   became available (for example after a JS context reload).
+   *
+   * Neither value is the SDK's cache age. Wall clock matches the platform's
+   * own predicate basis; a monotonic companion may land with native wiring for
+   * lifecycle safety across clock changes.
    */
-  loadedAt: number;
+  observedAt: number | null;
 };
 
 /**
- * Expiry surface on inventory the consumer holds.
+ * Publisher-owned staleness policy on inventory the consumer holds.
  *
- * NOTE (superseded): this whole type is superseded by the ratified expiry
- * decision, points 1, 2 and 7, and is pending removal in favor of a staleness
- * window the publisher configures. Treat nothing below as a statement of
- * platform behavior. The single source of truth is the canonical inventory
- * expiry record published on the internal tracker as
- * `inventory-expiry-canonical.md`; where this file and that record disagree,
- * that record is correct and this file is the defect.
+ * Protects against the library or the publisher holding an ad too long. It
+ * does **not** certify that an ad inside the window is valid: on an
+ * SDK-managed poll the ad may already be past the platform's own timeout at
+ * hand-off.
  *
- * Scope still matters, and this part survives: these members describe the
- * object the consumer holds. Pool `expired` events describe pool-owned
- * inventory only, and a handed-out ad has already left the pool, so those
- * events can never identify it.
+ * Scope still matters: these members describe the object the consumer holds.
+ * Pool churn events describe pool-owned inventory only, and a handed-out ad
+ * has already left the pool, so those events can never identify it.
  */
 export type AdExpiry = {
   /**
-   * Epoch millis after which this ad must not be shown.
-   *
-   * NOTE (superseded): point 1, pending removal. No expiry deadline is
-   * readable from public API on either platform, so this member cannot be
-   * populated. The former claim that `null` means the backend did not disclose
-   * an expiry is withdrawn. See the canonical record.
+   * Applied staleness window in milliseconds. Either the publisher's
+   * configured value or the guidance default for the format.
    */
-  expiresAt: number | null;
+  stalenessWindowMillis: number;
+  /** Whether the applied window was configured or inherited from guidance. */
+  stalenessWindowSource: AdStalenessWindowSource;
   /**
-   * True once this ad must not be shown.
+   * True once `observedAt` is non-null and older than `stalenessWindowMillis`.
+   * When `observedAt` is `null`, returns `false` (unknown age is not treated as
+   * stale by policy; the publisher still decides whether to show).
    *
-   * NOTE (superseded): points 1, 2 and 7, pending removal. The replacement is a
-   * predicate over the configured staleness window, which protects against
-   * holding an ad too long and does not certify that an ad inside the window is
-   * valid. See the canonical record.
+   * A `false` result is not a validity certificate.
    */
-  isExpired(): boolean;
+  isStaleByPolicy(): boolean;
   /**
-   * Fires if this ad expires while held. Returns an unsubscribe function.
+   * Fires when the held ad crosses the applied policy window. Returns an
+   * unsubscribe function.
    *
-   * NOTE (superseded): points 1 and 2, pending removal. Neither platform emits
-   * a per-ad expiry signal, so nothing can drive this. The replacement is a
-   * subscription over the same configured staleness window. See the canonical
-   * record.
+   * Edge semantics:
+   * - Subscribing when already stale by policy invokes the listener
+   *   synchronously once.
+   * - When `observedAt` is `null`, `isStaleByPolicy()` is `false` and this
+   *   subscription never fires (unknown age is not treated as stale).
+   * - `destroy()` releases listeners; a later unsubscribe is a no-op.
+   * - The timer lives on this object, not on the pool or the hook, so it keeps
+   *   running after `release()` transfers ownership to the caller and after
+   *   pool `destroy()`. Pool teardown does not own or cancel this timer.
    */
-  onExpired(listener: () => void): () => void;
+  onStaleByPolicy(listener: () => void): () => void;
 };

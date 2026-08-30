@@ -17,6 +17,18 @@ export type KnownAdErrorReason =
   | 'mediation-invalid-ad-size'
   | 'ad-already-used'
   | 'request-id-mismatch'
+  /**
+   * Pool create named a format the platform preloader rejects (today: rewarded
+   * interstitial on Android classic). Not an inventory-age signal: no platform
+   * produces an expired-ad error code, so staleness must not appear here.
+   */
+  | 'pool/format-preload-unsupported'
+  /**
+   * `AdPool.peekResponseInfo()` called where `poolResponseInfoPeek` is
+   * `unavailable` (classic Android has no peek). Distinct from a supported
+   * peek that resolves `null` because the buffer head is empty.
+   */
+  | 'pool/peek-unsupported'
   | 'unknown';
 
 /**

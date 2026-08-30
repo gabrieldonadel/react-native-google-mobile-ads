@@ -17,98 +17,84 @@
 
 import type { PollResult, PooledAd } from '../types/AdPool';
 import type { AdError } from '../types/AdError';
+import type { UseAdPoolStatus } from './useAdPool';
 
 /**
- * Mirrors `PollResult` for the last completed poll, plus the pre-poll `idle`
- * state and the post-hand-off `expired` state.
+ * Members present on every arm, so they are callable without narrowing.
  *
- * `empty`, `timeout`, and `expired` are not errors: the pool is still
- * refilling, or the held ad simply reached the end of its inventory lifecycle.
- */
-export type UsePooledAdStatus =
-  | 'idle'
-  | 'polling'
-  | 'filled'
-  | 'empty'
-  | 'timeout'
-  | 'no-fill'
-  | 'error'
-  /**
-   * The held ad expired while the hook owned it. `ad` is `null` and `error` is
-   * `null`. Poll again for fresh inventory.
-   *
-   * NOTE (superseded): ratified expiry decision points 2 and 7. The mechanism
-   * (destroy, clear, re-render) survives, but it is pending renaming and
-   * rewiring to the publisher's configured staleness window rather than a
-   * claimed SDK expiry. See the canonical inventory expiry record published on
-   * the internal tracker as `inventory-expiry-canonical.md`.
-   */
-  | 'expired';
-
-/**
  * `poll` and `release` keep the same identity for the life of the hook, so
  * listing them in a dependency array does not re-run the effect or callback
  * that depends on them.
  */
-export type UsePooledAdResult = {
-  status: UsePooledAdStatus;
+type UsePooledAdResultBase = {
   /**
-   * Last polled ad, or `null` when nothing is held.
+   * Pool lookup status for this `poolId`, same vocabulary as `useAdPool`
+   * (`absent` / `creating` / `ready` / `ready-degraded` / `error`).
    *
-   * Hook-owned: destroyed on unmount, when a later poll supersedes it, and
-   * when it expires. Use `release()` to take ownership instead.
+   * Distinguishes an absent pool from a warming one from a ready pool that
+   * has never been polled, without pairing a second hook. `status: 'idle'`
+   * with `available: false` alone cannot make that distinction.
    *
-   * The hook subscribes to the held ad's `onExpired`, and when it fires it
-   * destroys the ad, clears this to `null`, and sets `status: 'expired'`.
-   *
-   * NOTE (superseded): points 2 and 7. The guarantee becomes "never an ad the
-   * configured staleness window considers stale", which protects against the
-   * hook holding an ad too long and does not certify that the ad it hands you is
-   * valid. See the canonical record.
-   *
-   * `expired` is not an error and does not populate `error`, the same way
-   * `empty` and `timeout` do not: expiry is a normal inventory lifecycle
-   * event, not a failure.
+   * Still call `useAdPool` when you need the `AdPool` object, `retry()`, or
+   * `resolved.degradeReasons` — those are not mirrored here.
    */
-  ad: PooledAd | null;
-  /**
-   * Last poll failure, carrying the structured payload (`reason`, `phase`,
-   * `responseInfo`) as well as being a real `Error`. Only populated for
-   * `status: 'no-fill' | 'error'`.
-   */
-  error: AdError | null;
+  poolStatus: UseAdPoolStatus;
   /**
    * Whether the pool reports inventory ready to poll right now.
+   * Equivalent to `observedCount > 0`.
    *
    * Event-driven: updated from the pool's own events and after each poll
    * settles. There is no polling loop and no timer, so this is live without
    * costing a render per interval.
    *
-   * NOTE (superseded): it derives from SDK availability signals that do not
-   * sweep for expiry, so it is an upper bound. See the canonical record.
-   *
-   * `false` with `status: 'idle'` does not distinguish an absent pool from one
-   * that is still warming. Pair this hook with `useAdPool(poolId)` when that
-   * distinction matters; `useAdPool` reports `absent` versus `creating`.
+   * Derives from SDK / library availability signals that do not sweep for
+   * expiry on Android V2, so it is an upper bound (iOS sweep UNKNOWN).
    */
   available: boolean;
+  /**
+   * Observed buffer depth for this pool. Always a number (not optional): both
+   * classic platforms expose a count for SDK-managed preloaders
+   * (`getNumAdsAvailable` / `numberOfAdsAvailableWithPreloadID:`), and
+   * library-managed pools know their own buffer depth.
+   *
+   * Same event-driven update path as `available`. Upper bound: no expiry
+   * sweep on Android V2; iOS sweep UNKNOWN. See `AdPool.getAvailability()`.
+   */
+  observedCount: number;
   /**
    * Triggers a poll and updates hook state. Never rejects: it resolves into
    * the same `PollResult` the state reflects, so the return value is optional
    * convenience for callers that want to poll and show in one handler.
    *
    * Concurrent calls coalesce onto the in-flight poll, so a double tap cannot
-   * burn two ads. Never call during render: polling consumes inventory.
+   * burn two ads. Coalescing is **per hook instance**: two components that
+   * both call `usePooledAd(samePoolId)` do not share an in-flight poll. On a
+   * depth-1 pool one placement reliably starves the other — give each
+   * placement its own pool, or make a single owner poll and pass the ad down.
+   * Never call during render: polling consumes inventory.
    *
-   * NOTE (superseded): the hand-off freshness guarantee this used to restate is
-   * withdrawn under ratified expiry decision point 5. See `AdPool.poll` and the
-   * canonical record.
+   * A `filled` result is not a freshness guarantee; check `isStaleByPolicy()`
+   * when the placement requires it.
    */
   poll: () => Promise<PollResult>;
   /**
-   * Hands ownership of the current ad to the caller and clears hook state, so
-   * unmount cleanup will not destroy an ad someone else now owns. Returns
-   * `null` when there is nothing held.
+   * Hands ownership of the current ad to the caller and clears hook state to
+   * `{ status: 'idle', ad: null, error: null }` (among the current result
+   * arms), so unmount cleanup will not destroy an ad someone else now owns.
+   * Returns `null` when there is nothing held.
+   *
+   * After `release()`, the caller owns both `destroy()` and the staleness
+   * check: the policy timer lives on the ad, not on the pool or the hook. Pool
+   * `destroy()` does not stop that timer either; it is handle-owned for the
+   * ad's lifetime.
+   *
+   * Call `release()` before you `destroy()` or otherwise take over lifecycle.
+   * While this hook still owns the ad, do not call `ad.destroy()`: that leaves
+   * the hook able to report `filled` with a dead ad (same ownership rule as
+   * the inner `NativeAd` on a native arm). Post-show event observation
+   * (`OPENED`, `CLOSED`, `PAID`, `EARNED_REWARD`) also requires this path:
+   * hook-owned consumption destroys the spent ad when `show()` settles and
+   * drops listeners (see the `'consumed'` arm).
    *
    * Ordering is guaranteed: calling `release()` immediately after `await
    * poll()` returns the ad that poll just produced, without waiting for a
@@ -119,8 +105,89 @@ export type UsePooledAdResult = {
 };
 
 /**
+ * Poll-on-demand hook state, discriminated on `status`.
+ *
+ * Narrowing is intentional and asymmetric with a flat `{ status, ad, error }`
+ * object: `{ status: 'filled', ad: null }` and `{ status: 'error', error: null }`
+ * do not type-check. Terminal arms mirror `PollResult`; `idle`, `polling`, and
+ * `stale-by-policy` are hook-only.
+ *
+ * During `polling`, a previously held ad may still be present until the
+ * in-flight poll settles and supersedes it. `stale-by-policy` keeps
+ * already-rendered banner/native inventory in place and clears unrendered
+ * inventory. `consumed` clears the spent fullscreen ad when `await ad.show()`
+ * fulfills while the hook still owns it (not on `OPENED` / `CLOSED` /
+ * `EARNED_REWARD`).
+ *
+ * Status words follow the pool/poll vocabulary (`polling`, `filled`), not the
+ * multi-format load vocabulary (`loading`, `loaded` / `loaded-partial`). See
+ * `UseMultiFormatAdStatus`.
+ *
+ * `empty`, `timeout`, `stale-by-policy`, and `consumed` are not errors: the
+ * pool is still refilling, the held ad crossed the publisher's configured
+ * window, or a fullscreen ad was shown and is spent.
+ *
+ * **Ownership:** while this hook holds an ad, do not call `ad.destroy()`.
+ * Destroying hook-owned inventory leaves the hook able to report `filled`
+ * with a dead ad and, after a hook-owned `show()`, prevents observing
+ * post-show events because `destroy()` drops listeners. Call `release()`
+ * first if you need to own destruction or post-show observation, or leave
+ * destruction to the hook (unmount, superseding poll, stale unrendered
+ * eviction, or post-`show()` consumption). The same rule as the inner
+ * `NativeAd` on a native arm: one owner.
+ */
+export type UsePooledAdResult = UsePooledAdResultBase &
+  (
+    | { status: 'idle'; ad: null; error: null }
+    | { status: 'polling'; ad: PooledAd | null; error: null }
+    | { status: 'filled'; ad: PooledAd; error: null }
+    | { status: 'empty'; ad: null; error: null }
+    | { status: 'timeout'; ad: null; error: null }
+    | { status: 'no-fill'; ad: null; error: AdError }
+    | { status: 'error'; ad: null; error: AdError }
+    /**
+     * The held ad crossed the publisher's staleness window while the hook owned
+     * it. Not an error: `error` stays `null`. Poll again for fresher inventory.
+     *
+     * Unrendered inventory is destroyed and `ad` cleared. Already-rendered
+     * banner/native inventory is left in place (the impression was counted at
+     * first pixel); `ad` remains until `release()` or unmount. A `false` from
+     * `isStaleByPolicy()` before this status is not a validity certificate.
+     */
+    | { status: 'stale-by-policy'; ad: PooledAd | null; error: null }
+    /**
+     * A fullscreen ad the hook still owned was successfully shown and is
+     * spent. **Milestone:** `await ad.show()` fulfills (the show promise
+     * settles successfully). Not `OPENED`, `CLOSED`, or `EARNED_REWARD`.
+     *
+     * Not an error: `error` stays `null`. The hook destroys the spent ad and
+     * clears `ad`, which drops listeners — so a hook-owned consume path cannot
+     * observe post-show events. Use `release()` before `show()` when you need
+     * `CLOSED` / reward / paid wiring. Poll again for the next impression.
+     *
+     * Rejected alternatives: `OPENED` (native show promises resolve without
+     * waiting for it — Android `FullScreenAdModule.show` / iOS
+     * `RNGoogleMobileAdsFullScreenAd` resolve after `present`/`show`);
+     * `CLOSED` / `EARNED_REWARD` (classic `useFullScreenAd` /
+     * `MobileAd` event lifecycle for observation, not the pool consume
+     * signal — and waiting for them would contradict destroy-on-consume).
+     *
+     * A later `show()` on a reference you kept after `release()` fails with
+     * reason `'ad-already-used'`; that reason is for the show attempt, not for
+     * this status arm.
+     */
+    | { status: 'consumed'; ad: null; error: null }
+  );
+
+/**
+ * Status discriminant for `usePooledAd`. Derived from `UsePooledAdResult` so
+ * the string union cannot drift from the result arms.
+ */
+export type UsePooledAdStatus = UsePooledAdResult['status'];
+
+/**
  * Poll-on-demand against a pool. Never polls during render.
- * Stub: poll always resolves `{ status: 'empty' }`.
+ * Stub: poll always resolves `{ status: 'empty' }`; pool lookup is `absent`.
  */
 export function usePooledAd(poolId: string): UsePooledAdResult {
   void poolId;
@@ -128,7 +195,9 @@ export function usePooledAd(poolId: string): UsePooledAdResult {
     status: 'idle',
     ad: null,
     error: null,
+    poolStatus: 'absent',
     available: false,
+    observedCount: 0,
     poll: () => Promise.resolve({ status: 'empty' }),
     release: () => null,
   };
