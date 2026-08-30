@@ -35,7 +35,7 @@ A **pool** is a named buffer of ads for a placement (`poolId` + formats + unit).
 - **preload** via the platform SDK preloader when Google supports it, which today means interstitial, rewarded and app open on both classic backends, plus **rewarded interstitial on iOS only**: Android's preload registry has no slot for that format and rejects it,
 - hold **more than one** ready ad **on those fullscreen formats**, where Google recommends a buffer of 2 per preload ID under an app-wide cap the SDK resolves at runtime from server-delivered settings, which is why `maxManagedPoolAds` is reported as `null` rather than a number,
 - or fill using **multi-format requests** inside the pool when the formats are native/banner and that is the honest way to request them,
-- or run as an **emulated** depth-1 self-refill when there is no SDK display preloader, which is the case for **banner and native on both classic backends**, since neither iOS nor classic Android ships a display preloader. Still a pool from your point of view, labeled `emulated` / `degraded` rather than fake “full SDK preload” parity.
+- or run as a depth-1 self-refill when there is no SDK display preloader, which is the case for **banner and native on both classic backends**, since neither iOS nor classic Android ships a display preloader. Still a pool from your point of view: create reports `degraded: true` with reason `'pool/emulated-no-sdk-preloader'`, matching `getAdCapabilities().displayPreload === 'emulated'`. The token `emulated` is a capability / reason value, not a field on `AdPool` or `resolved`.
 
 So buffer depth greater than 1 is a **fullscreen** capability today. A display pool asking for depth clamps to 1 and tells you it did; see the degrade example below.
 
@@ -47,10 +47,11 @@ Ads do not stay usable forever, and what the library can honestly tell you about
 
 Google’s SDKs do not support every combination of format × buffer size × preload × multi-format × mediation. Mixing fullscreen with display in one pool, asking for buffer depths the backend cannot honor, illegal banner sizes in a multi-format request, or formats that are simply `unavailable` on this binary are examples of things that **cannot** all be true at once.
 
-So the library does **not** ask you to memorize the matrix. At **`AdPools.create` / `MultiFormatAdRequest.create` time** it validates the config against what this app can actually do:
+So the library does **not** ask you to memorize the matrix. At create time it validates the config against what this app can actually do:
 
-- **Hard-error** when the request is impossible (e.g. a format would be dropped, illegal size, unsupported mix).
-- **Loud degrade** when a milder adjustment is safe (e.g. clamp buffer size, emulated display preload); you see that on `resolved` / `degraded` / `degradeReasons`.
+- **`AdPools.create(config)`** returns `Promise<AdPool>` and **rejects** when the request is impossible (e.g. a format would be dropped, unsupported mix). Catch with `.catch()` / `try` around `await`.
+- **`MultiFormatAdRequest.create(adUnitId, options)`** is **synchronous** and **throws** when the request is impossible (e.g. illegal size). Catch with `try/catch`.
+- **Loud degrade** when a milder adjustment is safe (e.g. clamp buffer size, display preload without an SDK preloader); you see that on `resolved` / `degraded` / `degradeReasons`.
 
 Presets (`AdPoolPresets`, `MultiFormatAdPresets`) aim to request only configs that survive that check. Hand-written configs are welcome; just expect create-time validation instead of silent wrong behavior later.
 
@@ -133,7 +134,7 @@ Components: `<BannerAd>`, `<GAMBannerAd>`.
 **Additive callbacks:**
 
 - `onAdLoaded` dimensions may include `responseInfo?: ResponseInfo`
-- `onAdFailedToLoad` may carry `AdErrorPayload` fields (`reason`, `phase`) in addition to legacy `Error`
+- `onAdFailedToLoad` may carry `AdErrorPayload` fields (`reason`, `phase`) in addition to legacy `Error`. Typed as `Error & Partial<AdErrorPayload>` so existing `(error: Error) => void` handlers stay assignable under `strictFunctionTypes` — unlike hook / event surfaces where `reason` and `phase` are required.
 
 Sizes: `BannerAdSize`, `GAMBannerAdSize` (unchanged).
 
@@ -280,7 +281,12 @@ type MultiFormatLoadResult =
   | { status: 'error'; ads: never[]; errors: AdError[] };
 
 class MultiFormatAdRequest {
-  static create(adUnitId, options): MultiFormatAdRequest;
+  readonly adUnitId: string;
+  readonly options: MultiFormatAdRequestOptions;
+  static create(
+    adUnitId: string,
+    options: MultiFormatAdRequestOptions,
+  ): MultiFormatAdRequest; // synchronous; throws on illegal config
   load(): Promise<{ ads: MultiFormatAdHandle[]; errors: AdError[] }>;
   destroy(): void;
 }
@@ -308,7 +314,10 @@ declare const bannerHandle: MultiFormatBannerAdHandle;
 
 **Stub:** empty `View` until native attach lands. No runtime format check; the prop type enforces banner handles.
 
-Illegal in v1 (hard-error when wired): adaptive sizes, `FLUID`, empty formats, banner without sizes, `requestCount !== 1`.
+Illegal in v1, split by enforcement:
+
+- **Rejected by the type system** (do not type-check as `MultiFormatBannerSize` / `requestCount?: 1`): adaptive sizes, `FLUID`, `requestCount` other than `1`.
+- **Hard-error at create time when wired** (types still admit the shape): empty `formats`, banner format without `bannerSizes`.
 
 ---
 
@@ -540,7 +549,7 @@ A polled ad has left the pool, because ownership transfers on `poll()`, so pool 
 2. **Provenance decides what a time value means.** For a load this library performed (`'pool/emulated-no-sdk-preloader'`), `observedAt` is the library's own load completion. For an ad the platform polled out of its own buffer (`'pool/sdk-managed-preloader'`), `observedAt` is when the library first saw that response id become available, or `null` if it never did. Neither is the age the platform is accounting for.
 3. **Freshness is a policy you set, and it protects in one direction only.** Configure `stalenessWindowMillis` per pool or per request, or inherit the defaults from `AdStalenessGuidanceMillis` (four hours for app open via `APP_OPEN`, one hour otherwise via `OTHER`). Those figures are Google's published guidance used as publisher policy defaults, not values this library or the platform enforces; the Android interstitial one hour figure is contested between sources. The window guards against you or the library holding an ad too long. It does **not** certify that an ad inside the window is valid. Applied window and source are readable on every handed-out object.
 4. **`onStaleByPolicy` edge semantics.** Subscribing when the held ad is already stale by policy invokes the listener synchronously once. When `observedAt` is `null`, `isStaleByPolicy()` is `false` and the subscription never fires (unknown age is not treated as stale). `destroy()` releases listeners; a later unsubscribe is a no-op. The timer lives on the held object, not on the pool or the hook, so it keeps running after `release()` and after pool `destroy()`.
-5. **The hooks reduce accidental stale rendering, they do not remove it.** `usePooledAd` subscribes to the held ad's `onStaleByPolicy`. Unrendered inventory is destroyed, `ad` cleared, and `status` set to `'stale-by-policy'`. Already-rendered banner/native inventory is left in place (impression already counted). `useMultiFormatAd` does the same per handle; `status` becomes `'stale-by-policy'` once no showable handle remains, retaining prior load `errors`. That closes the window in which the library is holding an ad too long. It cannot close the window that opened before hand-off on a pool the platform preloader manages, per point 1.
+5. **The hooks reduce accidental stale rendering, they do not remove it.** `usePooledAd` subscribes to the held ad's `onStaleByPolicy`. Unrendered inventory is destroyed, `ad` cleared, and `status` set to `'stale-by-policy'` on the next render after the policy edge. Already-rendered banner/native inventory is left in place (impression already counted). `useMultiFormatAd` does the same per handle; `status` becomes `'stale-by-policy'` once no showable handle remains, retaining prior load `errors`. That closes the window in which the library is holding an ad too long after hand-off, except the same tick in which the policy edge fires (and the race between a check and `show()` / render). It also cannot close the window that opened before hand-off on a pool the platform preloader manages, per point 1. Keep an `isStaleByPolicy()` guard immediately before show/render for that residual.
 6. **Staleness is not an error.** `status: 'stale-by-policy'` never populates `error`, the same way `empty` and `timeout` do not. No platform reports a show failure for a stale ad, so representing staleness as an error would invent a failure that never occurs. Do not add an expiry reason to `KnownAdErrorReason`.
 7. **Library-managed pool refill is demand-gated.** Policy eviction of pool-owned inventory does not trigger an unprompted forever-refill; the pool refills in response to consumer demand (for example after `poll()`), because unshown fills depress match rate. SDK-managed pools follow the platform preloader's own refill behavior.
 8. **Poll order does not follow preload order.** The platform buffer is a priority queue ordered by a value-like key, not a queue in arrival order.
@@ -556,7 +565,7 @@ type AdPoolProviderProps = {
   children: React.ReactNode;
 };
 
-function AdPoolProvider(props: AdPoolProviderProps): JSX.Element;
+function AdPoolProvider(props: AdPoolProviderProps): React.ReactElement;
 
 // `retry` sits on a shared base so it is callable without narrowing first.
 // UseAdPoolResultBase is module-local; consumers import UseAdPoolResult.
@@ -643,8 +652,24 @@ type UseMultiFormatAdResult = UseMultiFormatAdResultBase &
 
 type UseMultiFormatAdStatus = UseMultiFormatAdResult['status'];
 
-function useMultiFormatAd(adUnitId, options): UseMultiFormatAdResult;
+function useMultiFormatAd(
+  adUnitId: string,
+  options: MultiFormatAdRequestOptions,
+): UseMultiFormatAdResult;
 ```
+
+### What the types cannot check
+
+Two guarantees above are expressible in TypeScript and are expressed: discriminated hook/pool results (narrowing `pool` / `ad` / `error`), and the banner-only `handle` prop on `MultiFormatBannerAdView`. The rest of the lifecycle contract is **runtime behavior**, not a type:
+
+- `poll()` / `load()` never reject (outcomes are result unions)
+- concurrent `poll()` / `load()` coalesce per hook instance
+- the hook owns inventory and destroys it on unmount, supersede, and unrendered `stale-by-policy`
+- `release()` immediately after `await poll()` / `await load()` returns that inventory (implementation ref)
+- returned `poll` / `load` / `release` / `retry` keep identity for the life of the hook instance
+- `AdPoolProvider` reconciles by `poolId`, not by `pools` array identity
+
+Trust those as documented behavior. TypeScript will not catch a violation.
 
 ### Hook state ownership
 
@@ -836,7 +861,7 @@ type AdError = NativeError & AdErrorPayload;
 
 Legacy `code` / `message` values stay unchanged. Fail-to-show uses `ERROR` with `phase: 'show'` (no separate show-failed event).
 
-`AdError` is a real `Error` (it can be thrown, and it has a `stack`) that also carries the structured payload, so `reason` / `phase` / `responseInfo` branching works identically whether the error arrived through a hook or through an `AdEventType.ERROR` event, whose payload is `Error & AdErrorPayload`. One shape, both delivery styles.
+`AdError` is a real `Error` (it can be thrown, and it has a `stack`) that also carries the structured payload, so `reason` / `phase` / `responseInfo` branching works identically whether the error arrived through a hook or through an `AdEventType.ERROR` event, whose payload is `Error & AdErrorPayload`. One shape for those delivery styles. Banner / GAM `onAdFailedToLoad` stays `Error & Partial<AdErrorPayload>` (see [Error handling](#6-error-handling-reason--phase)).
 
 `NativeError` itself is deliberately unchanged: it is shared with legacy code paths that have no structured payload to supply. `AdError` is the intersection, used by `useAdPool().error`, `usePooledAd().error`, `useMultiFormatAd().errors`, `MultiFormatLoadResult.errors`, and `MultiFormatAdRequest.load()`. Pool-level shapes (`PollResult`, `AdPoolEvent`) carry the plain `AdErrorPayload`, because those are data records crossing from native rather than objects a consumer would throw.
 
@@ -1026,8 +1051,9 @@ function LevelEndButton() {
 
   const onPress = useCallback(async () => {
     // Prefer a poll at show time. The hook already drops unrendered inventory
-    // that crossed the policy window; this guard covers the same-tick case and
-    // the race between check and show (re-check immediately before show).
+    // that crossed the policy window on the next render after the policy edge;
+    // this guard covers the residual same-tick case and the race between check
+    // and show (re-check immediately before show). See Expiry point 5.
     const result = await poll();
     if (result.status !== 'filled' || result.ad.format !== AdFormat.INTERSTITIAL) {
       return;
@@ -1296,7 +1322,9 @@ AdPools.get(`fullscreen-${AdFormat.INTERSTITIAL}-${unit}`);
 
 `code` / `message` stay as today. Use **`reason`** for cross-platform branching and **`phase`** to tell load vs show failures (no separate show-failed event).
 
-Those fields are available on every delivery surface, because they are the same type everywhere: `AdEventType.ERROR` payloads are `Error & AdErrorPayload`, the hooks expose `AdError` (which is exactly `NativeError & AdErrorPayload`), and the pool data records carry `AdErrorPayload`. So the branching below reads the same on a hook error as on an event payload.
+Those fields are **required** on the structured delivery surfaces that share one payload shape: `AdEventType.ERROR` payloads are `Error & AdErrorPayload`, the hooks expose `AdError` (exactly `NativeError & AdErrorPayload`), and the pool data records carry `AdErrorPayload`. So the branching below reads the same on a hook error as on an event payload.
+
+The **banner / GAM banner** `onAdFailedToLoad` prop is the deliberate exception: it is typed `Error & Partial<AdErrorPayload>` so existing `(error: Error) => void` handlers stay assignable under `strictFunctionTypes`. Treat `reason` / `phase` as optional there (`error.reason === 'no-fill'` is fine; do not assume they are always present).
 
 ```ts
 import { AdEventType, InterstitialAd, TestIds } from 'react-native-google-mobile-ads';
@@ -1306,7 +1334,7 @@ const ad = InterstitialAd.createForAdRequest(TestIds.INTERSTITIAL);
 ad.addAdEventListener(AdEventType.ERROR, error => {
   // error is Error & AdErrorPayload when wired
   if (error.reason === 'no-fill' || error.reason === 'mediation-no-fill') {
-    // distinct no-fill, safe on every delivery surface
+    // distinct no-fill; required fields on event / hook / pool surfaces
   } else if (error.phase === 'show') {
     // fail-to-show (exactly one ERROR event)
   } else {
@@ -1319,13 +1347,14 @@ ad.addAdEventListener(AdEventType.ERROR, error => {
 ad.load();
 ```
 
-Banner prop form (same fields, additive on the existing `Error`):
+Banner prop form (`Partial` exception — `reason` / `phase` may be absent):
 
 ```tsx
 <BannerAd
   unitId={TestIds.BANNER}
   size={BannerAdSize.BANNER}
   onAdFailedToLoad={error => {
+    // Error & Partial<AdErrorPayload>: guard before treating as structured
     if (error.reason === 'no-fill') {
       // …
     }
@@ -1342,6 +1371,7 @@ Where each failure shows up:
 | Multi-format hook load                   | `useMultiFormatAd(…).errors` (`AdError[]`) with `status: 'error'` or `'loaded-partial'`       |
 | Imperative `pool.poll()`                 | `PollResult` `no-fill` / `error` carrying `AdErrorPayload`; never a rejection                 |
 | Imperative `MultiFormatAdRequest.load()` | the resolved `errors: AdError[]`                                                              |
+| Banner / GAM `onAdFailedToLoad`          | `Error & Partial<AdErrorPayload>` (additive; `reason` / `phase` optional)                     |
 
 Because hook errors are `AdError`, `error.reason` and `error.phase` are real values there, not `undefined`:
 
